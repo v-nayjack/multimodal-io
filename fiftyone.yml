@@ -1,0 +1,18 @@
+name: "@v-nayjack/multimodal-io"
+description: Browse cloud storage and import MCAP or LeRobot data as datasets
+tags:
+  - io
+  - multimodal
+  - robotics
+version: 0.1.0
+fiftyone:
+  version: ">=2.25.0"
+url: https://github.com/v-nayjack/multimodal-io
+license: Apache 2.0
+operators:
+  - import_multimodal
+  - upload_multimodal
+secrets:
+  - FIFTYONE_MULTIMODAL_IO_ROOT
+  - FIFTYONE_MULTIMODAL_IO_PATH_TEMPLATE
+  - FIFTYONE_MULTIMODAL_IO_MAX_UPLOAD_MB

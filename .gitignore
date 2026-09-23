@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[oc]
+.pytest_cache/
+.venv/
+
+# Secrets and credentials: never commit these
+.env
+.env.*
+*.env
+env.sh
+*credentials*.json
+*service-account*.json
+*.pem
+*.key
+
+# Local test data (large binary files)
+data/
+*.mcap
+*.parquet
+*.mp4
+
+# Mac system files
+.DS_Store

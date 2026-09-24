@@ -176,11 +176,20 @@ through the FiftyOne server. S3/MinIO files go up in 64 MiB+ parts, four at
 a time; GCS uses a resumable upload session; Azure uses a single upload (up to
 5000 MiB).
 
--   **Keep the tab open** until uploads finish (the page warns before closing)
--   **Resume**: if the connection drops or the page reloads, add the same file
+-   **Keep the browser tab open** until uploads finish (the page warns
+    before closing). Closing the panel or opening another dataset is fine:
+    uploads keep going, and reopening the panel shows their progress
+-   **Queue**: files upload one at a time; files added during an upload join
+    the queue, and waiting files can be removed
+-   **Cancel** stops the file that is uploading and discards what was sent;
+    **Cancel all** also drops the waiting files. Files that already finished
+    stay imported. A file that is importing can't be cancelled
+-   **Resume**: if the connection drops or the tab reloads, add the same file
     again and click Start: only the missing parts are sent
--   **Cancel** discards what was sent so far
 -   A file that is already fully uploaded is not sent again
+-   Leaving the dataset blank isn't allowed; a name that doesn't exist yet
+    creates a new dataset. You can upload into any dataset, not just the one
+    you have open
 
 ## Upload script
 

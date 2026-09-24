@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   Alert,
   Box,
@@ -11,25 +11,20 @@ import {
 } from "@mui/material";
 import * as fos from "@fiftyone/state";
 import { useRecoilValue } from "recoil";
+import { runOperator } from "./engine";
 import {
-  cancelUpload,
-  isAbort,
-  runOperator,
-  uploadFile,
-  UploadStage,
-} from "./engine";
-
-type Status = "queued" | UploadStage | "done" | "error" | "cancelled";
-
-type Item = {
-  id: string;
-  file: File;
-  status: Status;
-  sent: number;
-  startedAt?: number;
-  error?: string;
-  added?: number;
-};
+  addFiles,
+  cancelAll,
+  cancelItem,
+  getState,
+  isActive,
+  Item,
+  removeItem,
+  setField,
+  startBatch,
+  Status,
+  subscribe,
+} from "./store";
 
 type Info = {
   roots?: string[];
@@ -39,24 +34,6 @@ type Info = {
   dataset_state?: string;
   error?: string;
 };
-
-const ROOT_PREF_KEY = "multimodal-io:upload-root";
-
-function loadRootPref(): string {
-  try {
-    return window.localStorage.getItem(ROOT_PREF_KEY) ?? "";
-  } catch {
-    return "";
-  }
-}
-
-function saveRootPref(root: string) {
-  try {
-    window.localStorage.setItem(ROOT_PREF_KEY, root);
-  } catch {
-    // ignore
-  }
-}
 
 const STATUS_LABEL: Record<Status, string> = {
   queued: "Waiting",
@@ -70,16 +47,11 @@ const STATUS_LABEL: Record<Status, string> = {
 
 export default function UploadPanel() {
   const currentDataset = useRecoilValue(fos.datasetName) as string | null;
-  const [datasetName, setDatasetName] = useState<string>(currentDataset ?? "");
-  const [tags, setTags] = useState("");
-  const [root, setRoot] = useState<string>(loadRootPref);
-  const [refresh, setRefresh] = useState(0);
+  const state = useSyncExternalStore(subscribe, getState);
+  const { items, running, root, tags, finished, refresh } = state;
+  const datasetName = state.datasetName ?? currentDataset ?? "";
   const [info, setInfo] = useState<Info | null>(null);
-  const [items, setItems] = useState<Item[]>([]);
-  const [running, setRunning] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [finished, setFinished] = useState<string | null>(null);
-  const controllers = useRef(new Map<string, AbortController>());
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Show where files will go and whether the dataset can take them
@@ -93,122 +65,30 @@ export default function UploadPanel() {
           // A remembered choice that is no longer allowed falls back to the
           // first allowed location
           if (root && next.roots && !next.roots.includes(root)) {
-            setRoot("");
+            setField("root", "");
             return;
           }
           setInfo(next);
         })
         .catch((e) =>
-          setInfo({
-            username: null,
-            target_dir: null,
-            error: e.message,
-          })
+          setInfo({ username: null, target_dir: null, error: e.message })
         );
     }, 400);
     return () => clearTimeout(timer);
   }, [datasetName, root, refresh]);
 
   const selectedRoot = root || info?.root || "";
-
-  // Warn before closing the tab mid-upload
-  useEffect(() => {
-    if (!running) return;
-    const onUnload = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "";
-    };
-    window.addEventListener("beforeunload", onUnload);
-    return () => window.removeEventListener("beforeunload", onUnload);
-  }, [running]);
-
-  const update = useCallback((id: string, patch: Partial<Item>) => {
-    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
-  }, []);
-
-  const addFiles = useCallback((files: FileList | File[] | null) => {
-    if (!files) return;
-    const picked = Array.from(files).filter((f) =>
-      f.name.toLowerCase().endsWith(".mcap")
-    );
-    setFinished(null);
-    setItems((prev) => {
-      const known = new Set(prev.map((it) => it.id));
-      const next = picked
-        .map((file) => ({
-          id: `${file.name}:${file.size}:${file.lastModified}`,
-          file,
-          status: "queued" as Status,
-          sent: 0,
-        }))
-        .filter((it) => !known.has(it.id));
-      return [...prev, ...next];
-    });
-  }, []);
-
-  const start = useCallback(async () => {
-    const name = datasetName.trim();
-    const tagList = tags
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
-    setRunning(true);
-    setFinished(null);
-    let completed = 0;
-
-    for (const item of items) {
-      if (item.status === "done") continue;
-      const controller = new AbortController();
-      controllers.current.set(item.id, controller);
-      update(item.id, { status: "starting", sent: 0, error: undefined, startedAt: Date.now() });
-      try {
-        const result = await uploadFile(item.file, {
-          root: selectedRoot,
-          datasetName: name,
-          tags: tagList.length ? tagList : undefined,
-          signal: controller.signal,
-          onStage: (stage) => update(item.id, { status: stage }),
-          onProgress: (sent) => update(item.id, { sent }),
-        });
-        completed += 1;
-        update(item.id, { status: "done", sent: item.file.size, added: result.num_added });
-        setRefresh((n) => n + 1);
-      } catch (e: any) {
-        update(item.id, isAbort(e) ? { status: "cancelled" } : { status: "error", error: e?.message ?? String(e) });
-      } finally {
-        controllers.current.delete(item.id);
-      }
-    }
-
-    setRunning(false);
-    if (completed > 0) {
-      setFinished(name);
-      if (name === currentDataset) {
-        runOperator("finish_upload_batch", { dataset_name: name }).catch(() => undefined);
-      }
-    }
-  }, [items, datasetName, tags, update, currentDataset, selectedRoot]);
-
-  const cancel = useCallback(
-    (item: Item) => {
-      controllers.current.get(item.id)?.abort();
-      cancelUpload(item.file, selectedRoot, datasetName.trim());
-      update(item.id, { status: "cancelled" });
-    },
-    [datasetName, update, selectedRoot]
-  );
-
-  const removeItem = useCallback((id: string) => {
-    setItems((prev) => prev.filter((it) => it.id !== id));
-  }, []);
-
+  const hasWork = items.some((it) => it.status !== "done");
   const canStart =
     !running &&
     !!selectedRoot &&
     !!datasetName.trim() &&
     !!info?.target_dir &&
     !info?.error &&
-    items.some((it) => it.status !== "done");
+    hasWork;
+  const pending = items.filter(
+    (it) => it.status === "queued" || isActive(it.status)
+  ).length;
 
   return (
     <Box sx={{ p: 2, height: "100%", overflow: "auto" }}>
@@ -217,8 +97,9 @@ export default function UploadPanel() {
           <Typography variant="h6">Upload MCAP files</Typography>
           <Typography variant="body2" color="text.secondary">
             Files of any size go straight from your browser to the bucket, then
-            get imported. Keep this tab open until uploads finish. Interrupted
-            uploads resume when you add the same file again.
+            get imported. Uploads keep going if you close this panel; keep the
+            browser tab open until they finish. Interrupted uploads resume when
+            you add the same file again.
           </Typography>
         </Box>
 
@@ -228,10 +109,7 @@ export default function UploadPanel() {
           label="Upload to"
           size="small"
           value={selectedRoot}
-          onChange={(e) => {
-            setRoot(e.target.value);
-            saveRootPref(e.target.value);
-          }}
+          onChange={(e) => setField("root", e.target.value)}
           disabled={running || !info?.roots?.length}
           helperText={
             (info?.roots?.length ?? 0) > 1
@@ -252,9 +130,14 @@ export default function UploadPanel() {
             label="Dataset"
             size="small"
             value={datasetName}
-            onChange={(e) => setDatasetName(e.target.value)}
+            onChange={(e) => setField("datasetName", e.target.value)}
             disabled={running}
-            helperText={info?.dataset_state ?? " "}
+            error={!datasetName.trim()}
+            helperText={
+              !datasetName.trim()
+                ? "Enter a dataset name. A new one is created if it doesn't exist"
+                : info?.dataset_state ?? " "
+            }
             sx={{ flex: 1 }}
           />
           <TextField
@@ -262,7 +145,7 @@ export default function UploadPanel() {
             label="Tags (optional, comma separated)"
             size="small"
             value={tags}
-            onChange={(e) => setTags(e.target.value)}
+            onChange={(e) => setField("tags", e.target.value)}
             disabled={running}
             helperText=" "
             sx={{ flex: 1 }}
@@ -277,12 +160,6 @@ export default function UploadPanel() {
         )}
 
         <Box
-          role="button"
-          tabIndex={0}
-          onClick={() => inputRef.current?.click()}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") inputRef.current?.click();
-          }}
           onDragOver={(e) => {
             e.preventDefault();
             setDragging(true);
@@ -291,7 +168,7 @@ export default function UploadPanel() {
           onDrop={(e) => {
             e.preventDefault();
             setDragging(false);
-            if (!running) addFiles(e.dataTransfer.files);
+            addFiles(e.dataTransfer.files);
           }}
           sx={{
             border: "2px dashed",
@@ -299,22 +176,22 @@ export default function UploadPanel() {
             borderRadius: 1,
             p: 3,
             textAlign: "center",
-            cursor: running ? "default" : "pointer",
             bgcolor: dragging ? "action.hover" : "transparent",
           }}
         >
           <Typography>Drag &amp; drop .mcap files here</Typography>
-          <Typography variant="caption" color="text.secondary" component="div" sx={{ mb: 1 }}>
-            No size limit · or
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            component="div"
+            sx={{ mb: 1 }}
+          >
+            No size limit · files added during an upload join the queue
           </Typography>
           <Button
             variant="outlined"
             size="small"
-            disabled={running}
-            onClick={(e) => {
-              e.stopPropagation();
-              inputRef.current?.click();
-            }}
+            onClick={() => inputRef.current?.click()}
           >
             Choose files
           </Button>
@@ -324,7 +201,6 @@ export default function UploadPanel() {
             accept=".mcap"
             multiple
             hidden
-            disabled={running}
             onChange={(e) => {
               addFiles(e.target.files);
               e.target.value = "";
@@ -335,22 +211,25 @@ export default function UploadPanel() {
         {items.length > 0 && (
           <Stack spacing={1.5}>
             {items.map((item) => (
-              <FileRow
-                key={item.id}
-                item={item}
-                running={running}
-                onCancel={() => cancel(item)}
-                onRemove={() => removeItem(item.id)}
-              />
+              <FileRow key={item.id} item={item} />
             ))}
           </Stack>
         )}
 
         <Stack direction="row" spacing={1}>
-          <Button variant="contained" disabled={!canStart} onClick={start}>
-            {running ? "Uploading..." : "Start upload"}
+          <Button
+            variant="contained"
+            disabled={!canStart}
+            onClick={() => startBatch(currentDataset, selectedRoot)}
+          >
+            {running ? `Uploading (${pending} left)...` : "Start upload"}
           </Button>
-          {finished && finished !== currentDataset && (
+          {running && (
+            <Button variant="outlined" color="error" onClick={cancelAll}>
+              Cancel all
+            </Button>
+          )}
+          {!running && finished && finished !== currentDataset && (
             <Button
               variant="outlined"
               onClick={() =>
@@ -366,52 +245,64 @@ export default function UploadPanel() {
   );
 }
 
-function FileRow({
-  item,
-  running,
-  onCancel,
-  onRemove,
-}: {
-  item: Item;
-  running: boolean;
-  onCancel: () => void;
-  onRemove: () => void;
-}) {
+function FileRow({ item }: { item: Item }) {
   const pct = item.file.size ? (100 * item.sent) / item.file.size : 0;
-  const active = item.status === "starting" || item.status === "uploading" || item.status === "importing";
+  const canCancel = item.status === "starting" || item.status === "uploading";
+  const canRemove = !isActive(item.status) && item.status !== "done";
   const detail =
     item.status === "uploading"
       ? `${formatBytes(item.sent)} of ${formatBytes(item.file.size)}${eta(item)}`
       : item.status === "done"
-      ? `${formatBytes(item.file.size)} · ${item.added ? "imported" : "already in dataset"}`
+      ? `${formatBytes(item.file.size)} · ${
+          item.added ? "imported" : "already in dataset"
+        }`
       : formatBytes(item.file.size);
 
   return (
     <Box>
-      <Stack direction="row" justifyContent="space-between" alignItems="baseline" spacing={1}>
+      <Stack
+        direction="row"
+        justifyContent="space-between"
+        alignItems="baseline"
+        spacing={1}
+      >
         <Typography variant="body2" sx={{ wordBreak: "break-all" }}>
           {item.file.name}
         </Typography>
         <Stack direction="row" spacing={1} alignItems="baseline">
-          <Typography variant="caption" color={item.status === "error" ? "error" : "text.secondary"} sx={{ whiteSpace: "nowrap" }}>
+          <Typography
+            variant="caption"
+            color={item.status === "error" ? "error" : "text.secondary"}
+            sx={{ whiteSpace: "nowrap" }}
+          >
             {STATUS_LABEL[item.status]} · {detail}
           </Typography>
-          {active && (
-            <Button size="small" onClick={onCancel}>
+          {canCancel && (
+            <Button size="small" onClick={() => cancelItem(item.id)}>
               Cancel
             </Button>
           )}
-          {!running && !active && item.status !== "done" && (
-            <Button size="small" onClick={onRemove}>
+          {canRemove && (
+            <Button size="small" onClick={() => removeItem(item.id)}>
               Remove
             </Button>
           )}
         </Stack>
       </Stack>
       <LinearProgress
-        variant={item.status === "starting" || item.status === "importing" ? "indeterminate" : "determinate"}
+        variant={
+          item.status === "starting" || item.status === "importing"
+            ? "indeterminate"
+            : "determinate"
+        }
         value={item.status === "done" ? 100 : pct}
-        color={item.status === "error" ? "error" : item.status === "done" ? "success" : "primary"}
+        color={
+          item.status === "error"
+            ? "error"
+            : item.status === "done"
+            ? "success"
+            : "primary"
+        }
       />
       {item.error && (
         <Typography variant="caption" color="error">

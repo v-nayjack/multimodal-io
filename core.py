@@ -12,6 +12,7 @@ against any bucket the caller has credentials for.
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import fnmatch
 import os
 import re
 
@@ -45,6 +46,7 @@ class ScanResult:
         num_files: the number of importable files
         total_bytes: the total size of the importable files, if known
         info: format-specific details (eg LeRobot ``meta/info.json``)
+        pattern: the glob pattern MCAP files were filtered by, if any
     """
 
     path: str
@@ -53,6 +55,7 @@ class ScanResult:
     num_files: int = 0
     total_bytes: int = 0
     info: dict = field(default_factory=dict)
+    pattern: str = None
 
     def describe(self):
         """Returns a one-line human-readable summary."""
@@ -74,20 +77,25 @@ class ScanResult:
         return "No MCAP files or LeRobot dataset found"
 
 
-def scan(path):
+def scan(path, pattern=None):
     """Detects whether ``path`` holds a LeRobot dataset or MCAP files.
 
     A directory containing ``meta/info.json`` is treated as a LeRobot v3
     dataset. Otherwise, all ``.mcap`` files at or below ``path`` are
-    collected. ``path`` may also be a single ``.mcap`` file.
+    collected, optionally filtered by a glob ``pattern``. ``path`` may also
+    be a single ``.mcap`` file.
 
     Args:
         path: a local or remote file or directory
+        pattern (None): an optional glob pattern, relative to ``path``, that
+            MCAP files must match, eg ``"**/kitchen_*.mcap"`` or
+            ``"run1/*.mcap"``. Ignored for LeRobot datasets
 
     Returns:
         a :class:`ScanResult`
     """
     path = fos.normalize_path(path).rstrip("/")
+    pattern = (pattern or "").strip() or None
 
     if _is_mcap(path) and fos.isfile(path):
         size = _file_size(path)
@@ -115,6 +123,9 @@ def scan(path):
         if not _is_mcap(relpath) or _is_hidden(relpath):
             continue
 
+        if pattern and not matches_pattern(relpath, pattern):
+            continue
+
         files.append(fos.join(path, relpath))
         total += entry.get("size") or 0
 
@@ -125,7 +136,35 @@ def scan(path):
         files=files,
         num_files=len(files),
         total_bytes=total,
+        pattern=pattern,
     )
+
+
+def matches_pattern(relpath, pattern):
+    """Whether a relative path matches a glob pattern.
+
+    Matching ignores case. ``*`` matches within a folder name, and a leading
+    ``**/`` also matches files at the top level, so ``"**/*.mcap"`` matches
+    ``"a.mcap"`` and ``"x/y/a.mcap"``.
+
+    Args:
+        relpath: a relative path using ``/`` separators
+        pattern: a glob pattern
+
+    Returns:
+        True/False
+    """
+    relpath = relpath.replace(os.sep, "/").lower()
+    pattern = pattern.lower()
+    if fnmatch.fnmatchcase(relpath, pattern):
+        return True
+
+    while pattern.startswith("**/"):
+        pattern = pattern[3:]
+        if fnmatch.fnmatchcase(relpath, pattern):
+            return True
+
+    return False
 
 
 def import_scan(
@@ -133,8 +172,9 @@ def import_scan(
 ):
     """Adds the contents of a :class:`ScanResult` to ``dataset``.
 
-    MCAP files already in the dataset are skipped, so re-running an import
-    on the same location only adds new files.
+    Re-running an import is safe: MCAP files already in the dataset are
+    skipped, and a LeRobot dataset that was already imported from the same
+    location is not added again.
 
     Args:
         dataset: a :class:`fiftyone.core.dataset.Dataset`
@@ -154,6 +194,9 @@ def import_scan(
     check_compatible(dataset, result.format)
 
     if result.format == LEROBOT:
+        if result.path in imported_sources(dataset):
+            return []
+
         ids = dataset.add_dir(
             dataset_dir=result.path,
             dataset_type=fo.types.LeRobotDataset,
@@ -175,6 +218,18 @@ def import_scan(
 
     _record_import(dataset, result)
     return ids
+
+
+def imported_sources(dataset):
+    """Returns the locations previously imported into ``dataset``.
+
+    Args:
+        dataset: a :class:`fiftyone.core.dataset.Dataset`
+
+    Returns:
+        a list of paths
+    """
+    return list((dataset.info.get(INFO_KEY) or {}).get("sources", []))
 
 
 def check_compatible(dataset, fmt):
@@ -305,7 +360,9 @@ def is_within(path, root):
     return path == root or path.startswith(root + "/")
 
 
-def upload_dir(local_dir, remote_dir, overwrite=False, progress=None):
+def upload_dir(
+    local_dir, remote_dir, pattern=None, overwrite=False, progress=None
+):
     """Copies a local folder to a remote folder, preserving its layout.
 
     Files that already exist remotely with the same size are skipped unless
@@ -314,6 +371,9 @@ def upload_dir(local_dir, remote_dir, overwrite=False, progress=None):
     Args:
         local_dir: a local directory, or a single local file
         remote_dir: the destination directory
+        pattern (None): an optional glob pattern, relative to ``local_dir``,
+            that files must match to be uploaded. See
+            :func:`matches_pattern`
         overwrite (False): whether to re-upload files that already exist
         progress (None): an optional progress callback, as accepted by
             :func:`fiftyone.core.storage.copy_files`
@@ -330,6 +390,7 @@ def upload_dir(local_dir, remote_dir, overwrite=False, progress=None):
             p
             for p in fos.list_files(local_dir, recursive=True)
             if not _is_hidden(p)
+            and (not pattern or matches_pattern(p, pattern))
         ]
 
     if not relpaths:

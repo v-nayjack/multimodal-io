@@ -114,14 +114,25 @@ On GCS, list the same headers under `responseHeader`.
 ### import_multimodal
 
 Choose a folder with the file browser and the operator reports what it found
-(eg `Detected MCAP: 42 files, 6.1 GB`). Then pick a new dataset name, or add to
-the dataset you have open if it holds the same format.
+(eg `Detected MCAP: 42 files, 6.1 GB`). Subfolders are always searched. Then
+pick a new dataset name, or add to the dataset you have open if it holds the
+same format.
+
+To import only some files, enter a **File pattern**, relative to the chosen
+folder:
+
+| Pattern              | Imports                                      |
+| -------------------- | -------------------------------------------- |
+| _(empty)_            | every `.mcap` file in the folder and below   |
+| `**/chopping*.mcap`  | files starting with `chopping`, at any depth |
+| `run1/*.mcap`        | files directly inside `run1/`                |
 
 This runs as a background (delegated) operation by default, so large folders
 don't tie up the App.
 
-A dataset holds either MCAP samples or LeRobot episodes, never both. Adding
-the same MCAP folder again only adds files that aren't already in the dataset.
+A dataset holds either MCAP samples or LeRobot episodes, never both.
+Re-running an import is safe: MCAP files already in the dataset are skipped,
+and a LeRobot folder that was already imported is not added again.
 
 ### upload_multimodal
 
@@ -145,6 +156,10 @@ python upload.py ./recordings --dataset kitchen-runs \
 # Import data that is already in a bucket, without uploading
 python upload.py s3://acme/fiftyone/shared/pick-place --dataset pick-place
 
+# Only upload/import files matching a pattern (same rules as the App)
+python upload.py ./recordings --dataset kitchen-runs \
+    --root gs://acme/fiftyone --pattern "**/chopping*.mcap"
+
 # Show the plan without changing anything
 python upload.py ./recordings --dataset kitchen-runs --dry-run
 ```
@@ -160,19 +175,12 @@ Uploaded 1 file(s), 15.4 MB; skipped 0 already uploaded
 
 Added 1 sample(s) to 'kitchen-runs'
 Dataset now has 1 sample(s)
-Next: open the dataset in the App and click 'Enable projections' to build its multimodal views
 ```
 
 Re-running the same command resumes an interrupted upload: files already in
 the bucket with the same size are skipped.
 
 Run `python upload.py --help` for all options.
-
-## After importing MCAP data
-
-The first time you open a new MCAP dataset, click **Enable projections** in
-the App to build its multimodal views. MCAP files added later are picked up
-automatically.
 
 ## Tests
 

@@ -166,3 +166,51 @@ def test_format_bytes():
     assert core.format_bytes(0) == "0 B"
     assert core.format_bytes(6_100_000_000) == "6.1 GB"
     assert core.format_bytes(None) == "0 B"
+
+
+def test_matches_pattern():
+    assert core.matches_pattern("a.mcap", "**/*.mcap")
+    assert core.matches_pattern("x/y/a.mcap", "**/*.mcap")
+    assert core.matches_pattern("x/chopping_1.mcap", "**/chopping*.mcap")
+    assert core.matches_pattern("chopping_1.mcap", "**/chopping*.mcap")
+    assert core.matches_pattern("run1/a.mcap", "run1/*.mcap")
+    assert not core.matches_pattern("run2/a.mcap", "run1/*.mcap")
+    assert not core.matches_pattern("x/sweeping.mcap", "**/chopping*.mcap")
+    assert core.matches_pattern("Sub/Chopping.MCAP", "sub/chopping*.mcap")
+
+
+def test_scan_pattern(tmp_path):
+    _touch(str(tmp_path / "chopping.mcap"), 10)
+    _touch(str(tmp_path / "run1" / "chopping_2.mcap"), 20)
+    _touch(str(tmp_path / "run1" / "sweeping.mcap"), 30)
+    _touch(str(tmp_path / "run2" / "sweeping.mcap"), 40)
+
+    result = core.scan(str(tmp_path), pattern="**/chopping*.mcap")
+    assert result.num_files == 2
+    assert result.total_bytes == 30
+    assert result.pattern == "**/chopping*.mcap"
+
+    result = core.scan(str(tmp_path), pattern="run1/*.mcap")
+    assert result.num_files == 2
+    assert result.total_bytes == 50
+
+    result = core.scan(str(tmp_path), pattern="**/missing*.mcap")
+    assert result.format is None
+
+    # A blank pattern means "everything"
+    assert core.scan(str(tmp_path), pattern="  ").num_files == 4
+
+
+def test_upload_dir_pattern(tmp_path):
+    src = tmp_path / "src"
+    dst = str(tmp_path / "dst")
+    _touch(str(src / "keep.mcap"), 10)
+    _touch(str(src / "sub" / "keep_2.mcap"), 20)
+    _touch(str(src / "skip.mcap"), 30)
+
+    assert core.upload_dir(str(src), dst, pattern="**/keep*.mcap") == (
+        2,
+        0,
+        30,
+    )
+    assert not os.path.exists(os.path.join(dst, "skip.mcap"))

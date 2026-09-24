@@ -13,6 +13,10 @@ Examples::
     python upload.py s3://my-bucket/fiftyone/shared/pick-place \\
         --dataset pick-place
 
+    # Only upload/import MCAP files that match a glob pattern
+    python upload.py ./recordings --dataset kitchen-runs \\
+        --root gs://my-bucket/fiftyone --pattern "**/chopping*.mcap"
+
     # See what would happen without changing anything
     python upload.py ./recordings --dataset kitchen-runs --dry-run
 
@@ -57,9 +61,16 @@ def main(argv=None):
         if not os.path.exists(source):
             _fail("Local path '%s' does not exist" % source)
 
-    local_scan = core.scan(source) if not is_remote else None
+    local_scan = core.scan(source, pattern=args.pattern) if not is_remote else None
     if local_scan is not None and local_scan.format is None:
-        _fail("No MCAP files or LeRobot dataset found in '%s'" % source)
+        _fail(_nothing_found(source, args.pattern))
+
+    # Patterns only select MCAP files; a LeRobot dataset is uploaded whole
+    upload_pattern = (
+        args.pattern
+        if local_scan is not None and local_scan.format == core.MCAP
+        else None
+    )
 
     # Fail before uploading anything if the dataset can't take this data
     if fo.dataset_exists(args.dataset) and local_scan is not None:
@@ -100,7 +111,11 @@ def main(argv=None):
 
     if not is_remote:
         num_up, num_skip, num_bytes = core.upload_dir(
-            source, remote_dir, overwrite=args.overwrite, progress=True
+            source,
+            remote_dir,
+            pattern=upload_pattern,
+            overwrite=args.overwrite,
+            progress=True,
         )
         print(
             "Uploaded %d file(s), %s; skipped %d already uploaded"
@@ -115,9 +130,9 @@ def main(argv=None):
         )
 
     scan_path = remote_file if not is_remote and remote_file else remote_dir
-    result = core.scan(scan_path)
+    result = core.scan(scan_path, pattern=args.pattern)
     if result.format is None:
-        _fail("No MCAP files or LeRobot dataset found in '%s'" % scan_path)
+        _fail(_nothing_found(scan_path, args.pattern))
 
     if fo.dataset_exists(args.dataset):
         dataset = fo.load_dataset(args.dataset)
@@ -128,19 +143,11 @@ def main(argv=None):
         dataset,
         result,
         tags=args.tags,
-        compute_metadata=not args.no_metadata,
         progress=True,
     )
 
     print("\nAdded %d sample(s) to '%s'" % (len(ids), dataset.name))
     print("Dataset now has %d sample(s)" % len(dataset))
-    if result.format == core.MCAP and not dataset.info.get(
-        "projection_enabled"
-    ):
-        print(
-            "Next: open the dataset in the App and click 'Enable "
-            "projections' to build its multimodal views"
-        )
 
     return 0
 
@@ -187,9 +194,11 @@ def _parse_args(argv):
         help="re-upload files that already exist in the bucket",
     )
     parser.add_argument(
-        "--no-metadata",
-        action="store_true",
-        help="skip computing metadata for new MCAP samples",
+        "--pattern",
+        help=(
+            "only upload/import MCAP files matching this glob pattern, "
+            'relative to the source, eg "**/chopping*.mcap" or "run1/*.mcap"'
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -214,6 +223,13 @@ def _dataset_state(name):
         return "will be created"
 
     return "exists, %d samples" % len(fo.load_dataset(name))
+
+
+def _nothing_found(path, pattern):
+    if pattern:
+        return "No MCAP files matching '%s' found in '%s'" % (pattern, path)
+
+    return "No MCAP files or LeRobot dataset found in '%s'" % path
 
 
 def _fail(msg):

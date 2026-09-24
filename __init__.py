@@ -84,13 +84,34 @@ class ImportMultimodal(foo.Operator):
             prop.error_message = "Choose a folder inside %s" % root
             return _form(inputs, "Import MCAP or LeRobot data")
 
-        result = core.scan(source)
+        pattern_prop = inputs.str(
+            "pattern",
+            required=False,
+            label="File pattern (optional)",
+            description=(
+                "Only import MCAP files matching this pattern, relative to "
+                "the folder. Subfolders are always searched. Examples: "
+                "**/chopping*.mcap, run1/*.mcap"
+            ),
+        )
+        pattern = ctx.params.get("pattern", None)
+
+        result = core.scan(source, pattern=pattern)
         if result.format is None:
-            prop.invalid = True
-            prop.error_message = "No MCAP files or LeRobot dataset found"
+            if pattern:
+                pattern_prop.invalid = True
+                pattern_prop.error_message = "No MCAP files match this pattern"
+            else:
+                prop.invalid = True
+                prop.error_message = "No MCAP files or LeRobot dataset found"
+
             return _form(inputs, "Import MCAP or LeRobot data")
 
         prop.view.caption = "Detected " + result.describe()
+        if pattern and result.format == core.LEROBOT:
+            pattern_prop.view = types.View(
+                caption="Ignored: LeRobot datasets are imported whole"
+            )
 
         default_name = core.sanitize(os.path.basename(source.rstrip("/")))
         if not _dataset_inputs(ctx, inputs, result.format, default_name):
@@ -106,7 +127,7 @@ class ImportMultimodal(foo.Operator):
         if root and not core.is_within(source, root):
             raise ValueError("'%s' is outside %s" % (source, root))
 
-        result = core.scan(source)
+        result = core.scan(source, pattern=ctx.params.get("pattern", None))
         dataset = _get_target_dataset(ctx)
 
         ids = core.import_scan(
@@ -174,8 +195,9 @@ class UploadMultimodal(foo.Operator):
                 types=".mcap",
                 max_size=max_mb * 1024 * 1024,
                 max_size_error_message=(
-                    "This file is larger than %d MB. Use the upload script "
-                    "for large files" % max_mb
+                    "This file is larger than %d MB. Upload it with the "
+                    "script instead: python upload.py <file> --dataset "
+                    "<name> --root %s" % (max_mb, root)
                 ),
                 lite=True,
             ),

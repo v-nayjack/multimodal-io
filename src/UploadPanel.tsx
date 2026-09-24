@@ -220,7 +220,7 @@ export default function UploadPanel() {
           <Button
             variant="contained"
             disabled={!canStart}
-            onClick={() => startBatch(currentDataset, selectedRoot)}
+            onClick={() => startBatch(currentDataset, selectedRoot, datasetName)}
           >
             {running ? `Uploading (${pending} left)...` : "Start upload"}
           </Button>

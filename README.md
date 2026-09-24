@@ -32,6 +32,10 @@ import fiftyone.management as fom
 fom.upload_plugin("/path/to/multimodal-io", overwrite=True)
 ```
 
+After installing or updating the plugin, **reload the App page** once. The
+App loads plugin code when the page opens, so an already-open tab keeps
+running the previous version.
+
 To use it locally:
 
 ```shell

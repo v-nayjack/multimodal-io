@@ -132,9 +132,16 @@ export function cancelAll() {
 }
 
 /** Uploads every waiting, failed, or cancelled file, one at a time. */
-export async function startBatch(currentDataset: string | null, root: string) {
+export async function startBatch(
+  currentDataset: string | null,
+  root: string,
+  shownDatasetName: string
+) {
   if (state.running) return;
-  const datasetName = (state.datasetName ?? "").trim();
+  // Use the name the panel shows, which defaults to the open dataset until
+  // the user types a different one
+  const datasetName = shownDatasetName.trim();
+  if (!datasetName) return;
   const tags = state.tags
     .split(",")
     .map((t) => t.trim())
@@ -143,6 +150,7 @@ export async function startBatch(currentDataset: string | null, root: string) {
   setState((s) => ({
     running: true,
     finished: null,
+    datasetName,
     items: s.items.map((it) =>
       it.status === "error" || it.status === "cancelled"
         ? { ...it, status: "queued" as Status, sent: 0, error: undefined }

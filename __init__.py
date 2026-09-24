@@ -10,7 +10,6 @@ from the browser.
 |
 """
 
-import base64
 import os
 
 import fiftyone as fo
@@ -19,17 +18,16 @@ import fiftyone.operators as foo
 import fiftyone.operators.types as types
 
 try:
-    from . import core
+    from . import core, uploads
 except ImportError:
     # Imported outside of FiftyOne's plugin loader, eg by pytest
     import core
+    import uploads
 
 
 ROOT_SECRET = "FIFTYONE_MULTIMODAL_IO_ROOT"
 TEMPLATE_SECRET = "FIFTYONE_MULTIMODAL_IO_PATH_TEMPLATE"
-MAX_UPLOAD_SECRET = "FIFTYONE_MULTIMODAL_IO_MAX_UPLOAD_MB"
 
-DEFAULT_MAX_UPLOAD_MB = 100
 
 NEW_DATASET = "NEW"
 CURRENT_DATASET = "CURRENT"
@@ -149,145 +147,235 @@ class ImportMultimodal(foo.Operator):
         return types.Property(outputs)
 
 
+PANEL_NAME = "MultimodalUploadPanel"
+
+
 class UploadMultimodal(foo.Operator):
     @property
     def config(self):
         return foo.OperatorConfig(
             name="upload_multimodal",
-            label="Upload an MCAP file",
+            label="Upload MCAP files",
             light_icon="/assets/icon-light.svg",
             dark_icon="/assets/icon-dark.svg",
             dynamic=True,
-            allow_immediate_execution=True,
-            allow_delegated_execution=False,
         )
 
     def resolve_input(self, ctx):
         inputs = types.Object()
-        root = _get_root(ctx)
-        max_mb = _get_max_upload_mb(ctx)
-
-        if not root:
+        if ctx.dataset is None:
             inputs.view(
-                "no_root",
-                types.Error(
-                    label="Uploads are not configured",
+                "no_dataset",
+                types.Warning(
+                    label="Open any dataset first",
                     description=(
-                        "An admin needs to set the %s plugin secret to the "
-                        "bucket folder uploads should go to, eg "
-                        "gs://my-bucket/fiftyone" % ROOT_SECRET
+                        "The upload panel opens inside a dataset. You can "
+                        "still upload into a different or new dataset"
                     ),
                 ),
             )
-            return _form(inputs, "Upload an MCAP file")
-
-        inputs.define_property(
-            "file",
-            types.UploadedFile(),
-            required=True,
-            label="MCAP file",
-            description=(
-                "Up to %d MB. For larger files, use the upload script "
-                "(see the plugin README)" % max_mb
-            ),
-            view=types.FileView(
-                label="MCAP file",
-                types=".mcap",
-                max_size=max_mb * 1024 * 1024,
-                max_size_error_message=(
-                    "This file is larger than %d MB. Upload it with the "
-                    "script instead: python upload.py <file> --dataset "
-                    "<name> --root %s" % (max_mb, root)
+        else:
+            inputs.view(
+                "info",
+                types.Notice(
+                    label=(
+                        "Opens the upload panel. Files of any size go "
+                        "straight from your browser to the bucket"
+                    )
                 ),
-                lite=True,
-            ),
+            )
+
+        return _form(inputs, "Upload MCAP files")
+
+    def execute(self, ctx):
+        ctx.trigger(
+            "open_panel",
+            params=dict(name=PANEL_NAME, isActive=True, layout="horizontal"),
         )
 
-        uploaded = ctx.params.get("file", None)
-        if not uploaded:
-            return _form(inputs, "Upload an MCAP file")
 
-        filename = uploaded.get("name") or ""
-        default_name = core.sanitize(os.path.splitext(filename)[0])
-        if not _dataset_inputs(ctx, inputs, core.MCAP, default_name):
-            return _form(inputs, "Upload an MCAP file")
-
-        name = _target_dataset_name(ctx)
-        try:
-            dest = core.target_dir(
-                root,
-                _get_username(ctx),
-                name,
-                template=ctx.secret(TEMPLATE_SECRET),
-            )
-            inputs.view(
-                "dest_notice",
-                types.Notice(label="Saves to %s/%s" % (dest, filename)),
-            )
-        except ValueError as e:
-            inputs.view("dest_error", types.Error(label=str(e)))
-            return _form(inputs, "Upload an MCAP file")
-
-        _options_inputs(inputs, core.MCAP)
-
-        return _form(inputs, "Upload an MCAP file")
+class GetUploadInfo(foo.Operator):
+    @property
+    def config(self):
+        return foo.OperatorConfig(name="get_upload_info", unlisted=True)
 
     def execute(self, ctx):
         root = _get_root(ctx)
+        info = {"root": root, "username": None, "target_dir": None}
         if not root:
-            raise ValueError("The %s plugin secret is not set" % ROOT_SECRET)
+            info["error"] = (
+                "Uploads are not configured. An admin needs to set the %s "
+                "plugin secret, eg gs://my-bucket/fiftyone" % ROOT_SECRET
+            )
+            return info
 
-        uploaded = ctx.params["file"]
-        filename = os.path.basename(uploaded["name"])
-        if not filename.lower().endswith(core.MCAP_EXTS):
-            raise ValueError("Only .mcap files can be uploaded")
+        info["username"] = _get_username(ctx)
+        name = (ctx.params.get("dataset_name", None) or "").strip()
+        if not name:
+            return info
 
-        content = base64.b64decode(uploaded["content"])
-        max_mb = _get_max_upload_mb(ctx)
-        if len(content) > max_mb * 1024 * 1024:
-            raise ValueError("File is larger than %d MB" % max_mb)
+        try:
+            info["target_dir"] = _upload_dir(ctx, name)
+        except ValueError as e:
+            info["error"] = str(e)
+            return info
 
-        username = _get_username(ctx)
-        name = _target_dataset_name(ctx)
-        dest = core.target_dir(
-            root, username, name, template=ctx.secret(TEMPLATE_SECRET)
+        if fo.dataset_exists(name):
+            dataset = fo.load_dataset(name)
+            try:
+                core.check_compatible(dataset, core.MCAP)
+                info[
+                    "dataset_state"
+                ] = "Adds to existing dataset (%d samples)" % len(dataset)
+            except ValueError as e:
+                info["error"] = str(e)
+        else:
+            info["dataset_state"] = "Creates a new dataset"
+
+        return info
+
+
+class StartLargeUpload(foo.Operator):
+    @property
+    def config(self):
+        return foo.OperatorConfig(name="start_large_upload", unlisted=True)
+
+    def execute(self, ctx):
+        path, size = _upload_target(ctx)
+
+        # A file that is already fully uploaded only needs importing
+        if fos.isfile(path) and fos.get_file_size(path) == size:
+            return {"mode": "exists", "path": path}
+
+        plan = uploads.start_upload(
+            path, size, origin=ctx.params.get("origin", None)
         )
-        filepath = fos.join(dest, filename)
+        plan["path"] = path
+        return plan
 
-        # Validate the target before writing anything to the bucket
-        dataset = _get_target_dataset(ctx, create=False)
-        if dataset is not None:
-            core.check_compatible(dataset, core.MCAP)
 
-        fos.write_file(content, filepath)
+class ResumeLargeUpload(foo.Operator):
+    @property
+    def config(self):
+        return foo.OperatorConfig(name="resume_large_upload", unlisted=True)
+
+    def execute(self, ctx):
+        path, size = _upload_target(ctx)
+        plan = uploads.resume_upload(path, size, ctx.params["upload_id"])
+        plan["path"] = path
+        return plan
+
+
+class CompleteLargeUpload(foo.Operator):
+    @property
+    def config(self):
+        return foo.OperatorConfig(name="complete_large_upload", unlisted=True)
+
+    def execute(self, ctx):
+        path, size = _upload_target(ctx)
+        mode = ctx.params["mode"]
+        if mode != "exists":
+            uploads.complete_upload(
+                path,
+                mode,
+                upload_id=ctx.params.get("upload_id", None),
+                parts=ctx.params.get("parts", None),
+            )
+
+        actual = fos.get_file_size(path)
+        if actual != size:
+            raise ValueError(
+                "Uploaded file is %d bytes but %d were expected"
+                % (actual, size)
+            )
+
+        name = ctx.params["dataset_name"].strip()
+        if fo.dataset_exists(name):
+            dataset = fo.load_dataset(name)
+        else:
+            dataset = fo.Dataset(name, persistent=True)
+
+        dest = _upload_dir(ctx, name)
         core.write_import_record(
             dest,
-            username=username,
+            username=_get_username(ctx),
             dataset=name,
             format=core.MCAP,
-            source=filename,
+            source=os.path.basename(path),
         )
 
-        if dataset is None:
-            dataset = _get_target_dataset(ctx)
-
-        result = core.scan(filepath)
         ids = core.import_scan(
             dataset,
-            result,
+            core.scan(path),
             tags=ctx.params.get("tags", None) or None,
             compute_metadata=True,
         )
+        return {"dataset": dataset.name, "num_added": len(ids), "path": path}
 
-        _finish(ctx, dataset, result)
 
-        return {"dataset": dataset.name, "num_added": len(ids)}
+class AbortLargeUpload(foo.Operator):
+    @property
+    def config(self):
+        return foo.OperatorConfig(name="abort_large_upload", unlisted=True)
 
-    def resolve_output(self, ctx):
-        outputs = types.Object()
-        outputs.str("dataset", label="Dataset")
-        outputs.int("num_added", label="Samples added")
-        return types.Property(outputs)
+    def execute(self, ctx):
+        path, _ = _upload_target(ctx)
+        uploads.abort_upload(
+            path,
+            ctx.params.get("mode", None),
+            upload_id=ctx.params.get("upload_id", None),
+        )
+        return {"aborted": True}
+
+
+class FinishUploadBatch(foo.Operator):
+    @property
+    def config(self):
+        return foo.OperatorConfig(name="finish_upload_batch", unlisted=True)
+
+    def execute(self, ctx):
+        name = ctx.params.get("dataset_name", None)
+        if not name or not fo.dataset_exists(name):
+            return
+
+        if ctx.dataset is not None and ctx.dataset.name == name:
+            ctx.trigger("reload_dataset")
+        else:
+            ctx.trigger("open_dataset", dict(dataset=name))
+
+
+def _upload_dir(ctx, dataset_name):
+    root = _get_root(ctx)
+    if not root:
+        raise ValueError("The %s plugin secret is not set" % ROOT_SECRET)
+
+    return core.target_dir(
+        root,
+        _get_username(ctx),
+        dataset_name,
+        template=ctx.secret(TEMPLATE_SECRET),
+    )
+
+
+def _upload_target(ctx):
+    """Recomputes the upload path server-side so a browser can only ever
+    write into its own user's folder under the configured root."""
+    filename = os.path.basename(ctx.params["filename"])
+    if not filename.lower().endswith(core.MCAP_EXTS):
+        raise ValueError("Only .mcap files can be uploaded")
+
+    name = (ctx.params.get("dataset_name", None) or "").strip()
+    if not name:
+        raise ValueError("A dataset name is required")
+
+    if fo.dataset_exists(name):
+        core.check_compatible(fo.load_dataset(name), core.MCAP)
+
+    size = int(ctx.params["size"])
+    if size <= 0:
+        raise ValueError("'%s' is empty" % filename)
+
+    return fos.join(_upload_dir(ctx, name), filename), size
 
 
 def _dataset_inputs(ctx, inputs, fmt, default_name):
@@ -403,13 +491,6 @@ def _get_root(ctx):
     return root.strip().rstrip("/") if root else None
 
 
-def _get_max_upload_mb(ctx):
-    try:
-        return int(ctx.secret(MAX_UPLOAD_SECRET) or DEFAULT_MAX_UPLOAD_MB)
-    except ValueError:
-        return DEFAULT_MAX_UPLOAD_MB
-
-
 def _get_username(ctx):
     user = ctx.user
     email = getattr(user, "email", None)
@@ -440,3 +521,9 @@ def _form(inputs, label):
 def register(p):
     p.register(ImportMultimodal)
     p.register(UploadMultimodal)
+    p.register(GetUploadInfo)
+    p.register(StartLargeUpload)
+    p.register(ResumeLargeUpload)
+    p.register(CompleteLargeUpload)
+    p.register(AbortLargeUpload)
+    p.register(FinishUploadBatch)

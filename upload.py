@@ -1,7 +1,8 @@
 """
 Uploads MCAP or LeRobot data to cloud storage and imports it into FiftyOne.
 
-Use this for large datasets; browser uploads are only meant for small files.
+Use this for whole folders, LeRobot datasets, or scripted uploads. For MCAP
+files from a laptop, the "Upload MCAP files" panel in the App also works.
 
 Examples::
 
@@ -61,7 +62,9 @@ def main(argv=None):
         if not os.path.exists(source):
             _fail("Local path '%s' does not exist" % source)
 
-    local_scan = core.scan(source, pattern=args.pattern) if not is_remote else None
+    local_scan = (
+        core.scan(source, pattern=args.pattern) if not is_remote else None
+    )
     if local_scan is not None and local_scan.format is None:
         _fail(_nothing_found(source, args.pattern))
 

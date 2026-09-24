@@ -22,3 +22,7 @@ data/
 
 # Mac system files
 .DS_Store
+
+# JS build
+node_modules/
+.yarn/

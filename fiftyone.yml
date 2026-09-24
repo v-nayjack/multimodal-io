@@ -12,7 +12,14 @@ license: Apache 2.0
 operators:
   - import_multimodal
   - upload_multimodal
+  - get_upload_info
+  - start_large_upload
+  - resume_large_upload
+  - complete_large_upload
+  - abort_large_upload
+  - finish_upload_batch
+panels:
+  - MultimodalUploadPanel
 secrets:
   - FIFTYONE_MULTIMODAL_IO_ROOT
   - FIFTYONE_MULTIMODAL_IO_PATH_TEMPLATE
-  - FIFTYONE_MULTIMODAL_IO_MAX_UPLOAD_MB

@@ -9,16 +9,15 @@ formats:
 -   **LeRobot v3**: a folder containing `meta/info.json` is imported as one
     sample per episode
 
-There are two ways to use it:
+| Use case                                        | Tool                                          |
+| ----------------------------------------------- | --------------------------------------------- |
+| Browse a bucket and import a folder in place    | `import_multimodal` operator (App)            |
+| Upload MCAP files of any size from your laptop  | **Upload MCAP files** panel (App)             |
+| Upload whole folders or script it               | [`upload.py`](upload.py) script (CLI or SDK)  |
 
-| Use case                                      | Tool                                  |
-| --------------------------------------------- | ------------------------------------- |
-| Browse a bucket and import a folder in place  | `import_multimodal` operator (App)    |
-| Quick experiment with one small MCAP file     | `upload_multimodal` operator (App)    |
-| Upload a large local folder, then import it   | [`upload.py`](upload.py) script (CLI) |
-
-Both paths share the same format detection and folder rules
-([`core.py`](core.py)), so data lands in the same place however it arrives.
+All paths share the same format detection and folder rules
+([`core.py`](core.py)), so data lands in the same place however it arrives,
+and a file that was already uploaded or imported is never added twice.
 
 Requires FiftyOne Enterprise `>=2.25.0` with multimodal support enabled.
 
@@ -48,7 +47,6 @@ variables of the same name. None of them hold credentials.
 | -------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------ |
 | `FIFTYONE_MULTIMODAL_IO_ROOT`          | The bucket folder that imports are limited to and uploads go to, eg `gs://acme/fiftyone`   | unset: browse anything, no uploads |
 | `FIFTYONE_MULTIMODAL_IO_PATH_TEMPLATE` | Where uploads land, using `{root}`, `{username}`, `{dataset}`                              | `{root}/users/{username}/{dataset}`  |
-| `FIFTYONE_MULTIMODAL_IO_MAX_UPLOAD_MB` | The largest file the App will accept for upload                                             | `100`                                |
 
 ### Recommended bucket layout
 
@@ -82,11 +80,17 @@ The plugin never asks for, stores, or logs bucket keys.
 
 ### Bucket CORS
 
-The App reads MCAP and LeRobot files straight from the bucket using HTTP range
-requests, so the bucket's CORS policy must allow your deployment's origin and
-**expose** the range headers. Without `ExposeHeaders`, imports succeed but
-samples fail to open with
-`Failed to read recording: Expected Content-Range header for byte-range response`.
+The browser talks to the bucket directly in two ways, and both need the
+bucket's CORS policy to allow your deployment's origin:
+
+| Need                           | Methods     | Exposed headers                                               |
+| ------------------------------ | ----------- | ------------------------------------------------------------- |
+| View recordings (range reads)  | `GET, HEAD` | `Content-Range`, `Content-Length`, `Accept-Ranges`, `Content-Type` |
+| Upload panel                   | `PUT`       | `ETag` (S3/MinIO multipart), `Range` (GCS resumable)          |
+
+Missing exposed headers fail quietly: imports succeed, but samples fail to open
+with `Expected Content-Range header for byte-range response`, or uploads stop
+with a message about `ETag`.
 
 S3 example:
 
@@ -94,20 +98,38 @@ S3 example:
 [
     {
         "AllowedOrigins": ["https://your-deployment.fiftyone.ai"],
-        "AllowedMethods": ["GET", "HEAD"],
+        "AllowedMethods": ["GET", "HEAD", "PUT"],
         "AllowedHeaders": ["*"],
         "ExposeHeaders": [
             "Content-Range",
             "Content-Length",
             "Accept-Ranges",
-            "Content-Type"
+            "Content-Type",
+            "ETag"
         ],
         "MaxAgeSeconds": 3600
     }
 ]
 ```
 
-On GCS, list the same headers under `responseHeader`.
+GCS example (`gcloud storage buckets update gs://BUCKET --cors-file=cors.json`):
+
+```json
+[
+    {
+        "origin": ["https://your-deployment.fiftyone.ai"],
+        "method": ["GET", "HEAD", "PUT"],
+        "responseHeader": [
+            "Content-Type",
+            "Content-Range",
+            "Content-Length",
+            "Accept-Ranges",
+            "Range"
+        ],
+        "maxAgeSeconds": 3600
+    }
+]
+```
 
 ## Operators
 
@@ -134,11 +156,29 @@ A dataset holds either MCAP samples or LeRobot episodes, never both.
 Re-running an import is safe: MCAP files already in the dataset are skipped,
 and a LeRobot folder that was already imported is not added again.
 
-### upload_multimodal
+### Upload MCAP files panel
 
-Drag in one `.mcap` file (up to `FIFTYONE_MULTIMODAL_IO_MAX_UPLOAD_MB`). The
-file is saved to `<root>/users/<you>/<dataset>/` and imported. Uploads go
-through the browser, so use the CLI for anything large.
+Run **Upload MCAP files** from the operator browser (or open the panel from
+the `+` tab menu) inside any dataset. Then:
+
+1.  Enter the dataset to upload into. The panel shows whether it will be
+    created or added to, and the exact folder files go to:
+    `<root>/users/<you>/<dataset>/`
+2.  Drag in or choose one or more `.mcap` files. There is no size limit
+3.  Click **Start upload**. Each file shows its progress, speed, and time left,
+    then is imported as soon as it finishes
+
+How it works: the plugin creates short-lived signed upload links for your
+folder only, and the browser sends the bytes straight to the bucket, never
+through the FiftyOne server. S3/MinIO files go up in 64 MiB+ parts, four at
+a time; GCS uses a resumable upload session; Azure uses a single upload (up to
+5000 MiB).
+
+-   **Keep the tab open** until uploads finish (the page warns before closing)
+-   **Resume**: if the connection drops or the page reloads, add the same file
+    again and click Start: only the missing parts are sent
+-   **Cancel** discards what was sent so far
+-   A file that is already fully uploaded is not sent again
 
 ## Upload script
 
@@ -182,7 +222,20 @@ the bucket with the same size are skipped.
 
 Run `python upload.py --help` for all options.
 
-## Tests
+## Development
+
+The upload panel is a JS plugin component in `src/`, built into
+`dist/index.umd.js` (committed, so installs need no build step):
+
+```shell
+yarn install
+FIFTYONE_DIR=/path/to/fiftyone yarn build
+```
+
+`FIFTYONE_DIR` must point at a FiftyOne source checkout; the build uses it to
+resolve `@fiftyone/*` packages.
+
+Tests:
 
 ```shell
 pytest tests

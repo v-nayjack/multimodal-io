@@ -214,3 +214,18 @@ def test_upload_dir_pattern(tmp_path):
         30,
     )
     assert not os.path.exists(os.path.join(dst, "skip.mcap"))
+
+
+def test_part_size_for():
+    import uploads
+
+    mib = 1024 * 1024
+    # Small and medium files use the 64 MiB minimum
+    assert uploads.part_size_for(1) == 64 * mib
+    assert uploads.part_size_for(6_712_135_583) == 64 * mib
+
+    # Huge files get bigger parts so they never need more than 1000
+    size = 200 * 1024**3
+    part = uploads.part_size_for(size)
+    assert part % mib == 0
+    assert -(-size // part) <= uploads.MAX_PARTS

@@ -44,6 +44,7 @@ type Plan = {
 type Saved = Pick<Plan, "mode" | "upload_id" | "session_url" | "chunk_size">;
 
 export type UploadOptions = {
+  root: string;
   datasetName: string;
   tags?: string[];
   onProgress: (sentBytes: number) => void;
@@ -84,9 +85,10 @@ export async function uploadFile(
     filename: file.name,
     size: file.size,
     dataset_name: opts.datasetName,
+    root: opts.root,
     origin: window.location.origin,
   };
-  const key = storeKey(file, opts.datasetName);
+  const key = storeKey(file, opts.root, opts.datasetName);
 
   opts.onStage("starting");
   const saved = load(key);
@@ -170,9 +172,10 @@ export async function uploadFile(
 /** Cancels an in-progress upload and discards what was sent so far. */
 export async function cancelUpload(
   file: File,
+  root: string,
   datasetName: string
 ): Promise<void> {
-  const key = storeKey(file, datasetName);
+  const key = storeKey(file, root, datasetName);
   const saved = load(key);
   remove(key);
   if (saved?.mode === "s3_multipart" && saved.upload_id) {
@@ -180,6 +183,7 @@ export async function cancelUpload(
       filename: file.name,
       size: file.size,
       dataset_name: datasetName,
+      root,
       mode: saved.mode,
       upload_id: saved.upload_id,
     }).catch(() => undefined);
@@ -402,8 +406,8 @@ export function isAbort(e: unknown): boolean {
   return e instanceof DOMException && e.name === "AbortError";
 }
 
-function storeKey(file: File, datasetName: string) {
-  return `${STORE_PREFIX}${datasetName}:${file.name}:${file.size}:${file.lastModified}`;
+function storeKey(file: File, root: string, datasetName: string) {
+  return `${STORE_PREFIX}${root}:${datasetName}:${file.name}:${file.size}:${file.lastModified}`;
 }
 
 function load(key: string): Saved | null {

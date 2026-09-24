@@ -4,6 +4,7 @@ import {
   Box,
   Button,
   LinearProgress,
+  MenuItem,
   Stack,
   TextField,
   Typography,
@@ -31,12 +32,31 @@ type Item = {
 };
 
 type Info = {
-  root: string | null;
+  roots?: string[];
+  root?: string | null;
   username: string | null;
   target_dir: string | null;
   dataset_state?: string;
   error?: string;
 };
+
+const ROOT_PREF_KEY = "multimodal-io:upload-root";
+
+function loadRootPref(): string {
+  try {
+    return window.localStorage.getItem(ROOT_PREF_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveRootPref(root: string) {
+  try {
+    window.localStorage.setItem(ROOT_PREF_KEY, root);
+  } catch {
+    // ignore
+  }
+}
 
 const STATUS_LABEL: Record<Status, string> = {
   queued: "Waiting",
@@ -52,6 +72,8 @@ export default function UploadPanel() {
   const currentDataset = useRecoilValue(fos.datasetName) as string | null;
   const [datasetName, setDatasetName] = useState<string>(currentDataset ?? "");
   const [tags, setTags] = useState("");
+  const [root, setRoot] = useState<string>(loadRootPref);
+  const [refresh, setRefresh] = useState(0);
   const [info, setInfo] = useState<Info | null>(null);
   const [items, setItems] = useState<Item[]>([]);
   const [running, setRunning] = useState(false);
@@ -65,11 +87,19 @@ export default function UploadPanel() {
     const timer = setTimeout(() => {
       runOperator<Info>("get_upload_info", {
         dataset_name: datasetName.trim(),
+        root,
       })
-        .then(setInfo)
+        .then((next) => {
+          // A remembered choice that is no longer allowed falls back to the
+          // first allowed location
+          if (root && next.roots && !next.roots.includes(root)) {
+            setRoot("");
+            return;
+          }
+          setInfo(next);
+        })
         .catch((e) =>
           setInfo({
-            root: null,
             username: null,
             target_dir: null,
             error: e.message,
@@ -77,7 +107,9 @@ export default function UploadPanel() {
         );
     }, 400);
     return () => clearTimeout(timer);
-  }, [datasetName]);
+  }, [datasetName, root, refresh]);
+
+  const selectedRoot = root || info?.root || "";
 
   // Warn before closing the tab mid-upload
   useEffect(() => {
@@ -131,6 +163,7 @@ export default function UploadPanel() {
       update(item.id, { status: "starting", sent: 0, error: undefined, startedAt: Date.now() });
       try {
         const result = await uploadFile(item.file, {
+          root: selectedRoot,
           datasetName: name,
           tags: tagList.length ? tagList : undefined,
           signal: controller.signal,
@@ -139,6 +172,7 @@ export default function UploadPanel() {
         });
         completed += 1;
         update(item.id, { status: "done", sent: item.file.size, added: result.num_added });
+        setRefresh((n) => n + 1);
       } catch (e: any) {
         update(item.id, isAbort(e) ? { status: "cancelled" } : { status: "error", error: e?.message ?? String(e) });
       } finally {
@@ -153,15 +187,15 @@ export default function UploadPanel() {
         runOperator("finish_upload_batch", { dataset_name: name }).catch(() => undefined);
       }
     }
-  }, [items, datasetName, tags, update, currentDataset]);
+  }, [items, datasetName, tags, update, currentDataset, selectedRoot]);
 
   const cancel = useCallback(
     (item: Item) => {
       controllers.current.get(item.id)?.abort();
-      cancelUpload(item.file, datasetName.trim());
+      cancelUpload(item.file, selectedRoot, datasetName.trim());
       update(item.id, { status: "cancelled" });
     },
-    [datasetName, update]
+    [datasetName, update, selectedRoot]
   );
 
   const removeItem = useCallback((id: string) => {
@@ -170,6 +204,7 @@ export default function UploadPanel() {
 
   const canStart =
     !running &&
+    !!selectedRoot &&
     !!datasetName.trim() &&
     !!info?.target_dir &&
     !info?.error &&
@@ -186,6 +221,30 @@ export default function UploadPanel() {
             uploads resume when you add the same file again.
           </Typography>
         </Box>
+
+        <TextField
+          id="mmio-upload-root"
+          select
+          label="Upload to"
+          size="small"
+          value={selectedRoot}
+          onChange={(e) => {
+            setRoot(e.target.value);
+            saveRootPref(e.target.value);
+          }}
+          disabled={running || !info?.roots?.length}
+          helperText={
+            (info?.roots?.length ?? 0) > 1
+              ? "Allowed locations are set by your admin"
+              : " "
+          }
+        >
+          {(info?.roots ?? []).map((r) => (
+            <MenuItem key={r} value={r}>
+              {r}
+            </MenuItem>
+          ))}
+        </TextField>
 
         <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
           <TextField
@@ -244,10 +303,21 @@ export default function UploadPanel() {
             bgcolor: dragging ? "action.hover" : "transparent",
           }}
         >
-          <Typography>Drag &amp; drop .mcap files, or click to choose</Typography>
-          <Typography variant="caption" color="text.secondary">
-            No size limit
+          <Typography>Drag &amp; drop .mcap files here</Typography>
+          <Typography variant="caption" color="text.secondary" component="div" sx={{ mb: 1 }}>
+            No size limit · or
           </Typography>
+          <Button
+            variant="outlined"
+            size="small"
+            disabled={running}
+            onClick={(e) => {
+              e.stopPropagation();
+              inputRef.current?.click();
+            }}
+          >
+            Choose files
+          </Button>
           <input
             ref={inputRef}
             type="file"

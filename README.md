@@ -45,7 +45,7 @@ variables of the same name. None of them hold credentials.
 
 | Setting                                | Purpose                                                                                     | Default                              |
 | -------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------ |
-| `FIFTYONE_MULTIMODAL_IO_ROOT`          | The bucket folder that imports are limited to and uploads go to, eg `gs://acme/fiftyone`   | unset: browse anything, no uploads |
+| `FIFTYONE_MULTIMODAL_IO_ROOT`          | One or more comma-separated bucket folders that imports are limited to and uploads can go to, eg `s3://acme/fiftyone, gs://acme-eu/fiftyone`. Users pick one in the upload panel; the first is the default | unset: browse anything, no uploads |
 | `FIFTYONE_MULTIMODAL_IO_PATH_TEMPLATE` | Where uploads land, using `{root}`, `{username}`, `{dataset}`                              | `{root}/users/{username}/{dataset}`  |
 
 ### Recommended bucket layout
@@ -158,15 +158,17 @@ and a LeRobot folder that was already imported is not added again.
 
 ### Upload MCAP files panel
 
-Run **Upload MCAP files** from the operator browser (or open the panel from
-the `+` tab menu) inside any dataset. Then:
+Inside any dataset, open the panel from the `+` tab menu, or click **Upload
+MCAP files** in the operator browser. Then:
 
-1.  Enter the dataset to upload into. The panel shows whether it will be
-    created or added to, and the exact folder files go to:
-    `<root>/users/<you>/<dataset>/`
-2.  Drag in or choose one or more `.mcap` files. There is no size limit
-3.  Click **Start upload**. Each file shows its progress, speed, and time left,
-    then is imported as soon as it finishes
+1.  **Upload to**: pick one of the locations your admin allowed
+    (`FIFTYONE_MULTIMODAL_IO_ROOT`). The panel remembers your choice
+2.  **Dataset**: the dataset to upload into. The panel shows whether it will
+    be created or added to, and the exact folder files go to:
+    `<location>/users/<you>/<dataset>/`
+3.  Drag in `.mcap` files or click **Choose files**. There is no size limit
+4.  Click **Start upload**. Files upload one at a time; each shows its
+    progress, speed, and time left, then is imported as soon as it finishes
 
 How it works: the plugin creates short-lived signed upload links for your
 folder only, and the browser sends the bytes straight to the bucket, never

@@ -49,13 +49,13 @@ class ImportMultimodal(foo.Operator):
 
     def resolve_input(self, ctx):
         inputs = types.Object()
-        root = _get_root(ctx)
+        roots = _get_roots(ctx)
 
-        if root:
+        if roots:
             inputs.view(
                 "root_notice",
                 types.Notice(
-                    label="Imports are limited to %s" % root,
+                    label="Imports are limited to: %s" % ", ".join(roots),
                 ),
             )
 
@@ -77,9 +77,11 @@ class ImportMultimodal(foo.Operator):
         if not source:
             return _form(inputs, "Import MCAP or LeRobot data")
 
-        if root and not core.is_within(source, root):
+        if not _is_allowed(source, roots):
             prop.invalid = True
-            prop.error_message = "Choose a folder inside %s" % root
+            prop.error_message = "Choose a folder inside: %s" % ", ".join(
+                roots
+            )
             return _form(inputs, "Import MCAP or LeRobot data")
 
         pattern_prop = inputs.str(
@@ -121,9 +123,12 @@ class ImportMultimodal(foo.Operator):
 
     def execute(self, ctx):
         source = _parse_path(ctx, "source")
-        root = _get_root(ctx)
-        if root and not core.is_within(source, root):
-            raise ValueError("'%s' is outside %s" % (source, root))
+        roots = _get_roots(ctx)
+        if not _is_allowed(source, roots):
+            raise ValueError(
+                "'%s' is outside the allowed locations: %s"
+                % (source, ", ".join(roots))
+            )
 
         result = core.scan(source, pattern=ctx.params.get("pattern", None))
         dataset = _get_target_dataset(ctx)
@@ -158,36 +163,15 @@ class UploadMultimodal(foo.Operator):
             label="Upload MCAP files",
             light_icon="/assets/icon-light.svg",
             dark_icon="/assets/icon-dark.svg",
-            dynamic=True,
         )
 
-    def resolve_input(self, ctx):
-        inputs = types.Object()
-        if ctx.dataset is None:
-            inputs.view(
-                "no_dataset",
-                types.Warning(
-                    label="Open any dataset first",
-                    description=(
-                        "The upload panel opens inside a dataset. You can "
-                        "still upload into a different or new dataset"
-                    ),
-                ),
-            )
-        else:
-            inputs.view(
-                "info",
-                types.Notice(
-                    label=(
-                        "Opens the upload panel. Files of any size go "
-                        "straight from your browser to the bucket"
-                    )
-                ),
-            )
-
-        return _form(inputs, "Upload MCAP files")
-
     def execute(self, ctx):
+        if ctx.dataset is None:
+            raise ValueError(
+                "Open any dataset first; the upload panel opens inside a "
+                "dataset but can upload into a different or new one"
+            )
+
         ctx.trigger(
             "open_panel",
             params=dict(name=PANEL_NAME, isActive=True, layout="horizontal"),
@@ -200,16 +184,23 @@ class GetUploadInfo(foo.Operator):
         return foo.OperatorConfig(name="get_upload_info", unlisted=True)
 
     def execute(self, ctx):
-        root = _get_root(ctx)
-        info = {"root": root, "username": None, "target_dir": None}
-        if not root:
+        roots = _get_roots(ctx)
+        info = {"roots": roots, "username": None, "target_dir": None}
+        if not roots:
             info["error"] = (
                 "Uploads are not configured. An admin needs to set the %s "
-                "plugin secret, eg gs://my-bucket/fiftyone" % ROOT_SECRET
+                "plugin secret to one or more comma-separated bucket "
+                "folders, eg gs://my-bucket/fiftyone" % ROOT_SECRET
             )
             return info
 
         info["username"] = _get_username(ctx)
+        try:
+            info["root"] = _selected_root(ctx)
+        except ValueError as e:
+            info["error"] = str(e)
+            return info
+
         name = (ctx.params.get("dataset_name", None) or "").strip()
         if not name:
             return info
@@ -345,10 +336,7 @@ class FinishUploadBatch(foo.Operator):
 
 
 def _upload_dir(ctx, dataset_name):
-    root = _get_root(ctx)
-    if not root:
-        raise ValueError("The %s plugin secret is not set" % ROOT_SECRET)
-
+    root = _selected_root(ctx)
     return core.target_dir(
         root,
         _get_username(ctx),
@@ -486,9 +474,41 @@ def _progress(ctx):
     )
 
 
-def _get_root(ctx):
-    root = ctx.secret(ROOT_SECRET)
-    return root.strip().rstrip("/") if root else None
+def _get_roots(ctx):
+    """The allowed bucket folders, from a comma or newline separated
+    secret."""
+    value = ctx.secret(ROOT_SECRET) or ""
+    roots = []
+    for root in value.replace("\n", ",").split(","):
+        root = root.strip().rstrip("/")
+        if root and root not in roots:
+            roots.append(root)
+
+    return roots
+
+
+def _is_allowed(path, roots):
+    return not roots or any(core.is_within(path, r) for r in roots)
+
+
+def _selected_root(ctx):
+    """The upload root chosen in the panel, which must be an allowed one.
+    Defaults to the first allowed root."""
+    roots = _get_roots(ctx)
+    if not roots:
+        raise ValueError("The %s plugin secret is not set" % ROOT_SECRET)
+
+    root = (ctx.params.get("root", None) or "").strip().rstrip("/")
+    if not root:
+        return roots[0]
+
+    if root not in roots:
+        raise ValueError(
+            "'%s' is not an allowed upload location. Choose one of: %s"
+            % (root, ", ".join(roots))
+        )
+
+    return root
 
 
 def _get_username(ctx):

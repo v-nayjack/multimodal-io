@@ -137,6 +137,7 @@ class ImportMultimodal(foo.Operator):
             dataset,
             result,
             tags=ctx.params.get("tags", None) or None,
+            uploaded_by=_get_username(ctx),
             compute_metadata=True,
             progress=_progress(ctx),
         )
@@ -299,6 +300,7 @@ class CompleteLargeUpload(foo.Operator):
             dataset,
             core.scan(path),
             tags=ctx.params.get("tags", None) or None,
+            uploaded_by=_get_username(ctx),
             compute_metadata=True,
         )
         return {"dataset": dataset.name, "num_added": len(ids), "path": path}

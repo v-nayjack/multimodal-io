@@ -79,6 +79,8 @@ def main(argv=None):
     if fo.dataset_exists(args.dataset) and local_scan is not None:
         core.check_compatible(fo.load_dataset(args.dataset), local_scan.format)
 
+    username = args.username or _current_username()
+
     if is_remote:
         remote_dir = source
     else:
@@ -89,7 +91,6 @@ def main(argv=None):
                 "go, eg --root gs://my-bucket/fiftyone" % ROOT_ENV
             )
 
-        username = args.username or _current_username()
         template = args.template or os.environ.get(TEMPLATE_ENV)
         remote_dir = core.target_dir(
             root, username, args.dataset, template=template
@@ -146,6 +147,7 @@ def main(argv=None):
         dataset,
         result,
         tags=args.tags,
+        uploaded_by=username,
         progress=True,
     )
 
@@ -186,7 +188,10 @@ def _parse_args(argv):
     )
     parser.add_argument(
         "--username",
-        help="override the username used in the upload path",
+        help=(
+            "override the username used in the upload path and recorded in "
+            "each sample's uploaded_by field"
+        ),
     )
     parser.add_argument(
         "--tags", nargs="+", help="tag(s) to add to each new sample"

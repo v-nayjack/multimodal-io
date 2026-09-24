@@ -66,7 +66,9 @@ variables of the same name. None of them hold credentials.
 ```
 
 Every upload has an owner, experiments stay in each person's folder, and
-curated data stays separate. If your team uses a different convention, change
+curated data stays separate. Every sample added by the plugin or the script
+also gets an indexed `uploaded_by` field with the username of whoever uploaded
+or imported it, so you can filter by person in the App sidebar. If your team uses a different convention, change
 `FIFTYONE_MULTIMODAL_IO_PATH_TEMPLATE`.
 
 ### Credentials

@@ -30,6 +30,7 @@ LEROBOT_INFO_PATH = "meta/info.json"
 DEFAULT_PATH_TEMPLATE = "{root}/users/{username}/{dataset}"
 IMPORT_RECORD = "_import.json"
 INFO_KEY = "multimodal_io"
+UPLOADED_BY_FIELD = "uploaded_by"
 
 _UNSAFE_CHARS = re.compile(r"[^a-z0-9._-]+")
 
@@ -168,7 +169,12 @@ def matches_pattern(relpath, pattern):
 
 
 def import_scan(
-    dataset, result, tags=None, compute_metadata=True, progress=None
+    dataset,
+    result,
+    tags=None,
+    uploaded_by=None,
+    compute_metadata=True,
+    progress=None,
 ):
     """Adds the contents of a :class:`ScanResult` to ``dataset``.
 
@@ -176,10 +182,14 @@ def import_scan(
     skipped, and a LeRobot dataset that was already imported from the same
     location is not added again.
 
+    New samples record who brought them in, in an indexed
+    :const:`UPLOADED_BY_FIELD` field, so the App can filter by user.
+
     Args:
         dataset: a :class:`fiftyone.core.dataset.Dataset`
         result: a :class:`ScanResult`
         tags (None): optional tag(s) to add to each new sample
+        uploaded_by (None): the username to record on each new sample
         compute_metadata (True): whether to populate metadata for new MCAP
             samples
         progress (None): an optional progress callback, as accepted by
@@ -216,8 +226,27 @@ def import_scan(
         if ids and compute_metadata:
             dataset.select(ids).compute_metadata(progress=progress)
 
+    if ids and uploaded_by:
+        set_uploaded_by(dataset, ids, uploaded_by)
+
     _record_import(dataset, result)
     return ids
+
+
+def set_uploaded_by(dataset, ids, username):
+    """Records ``username`` as the uploader of the given samples.
+
+    The field is indexed so that filtering by user in the App stays fast on
+    large datasets.
+
+    Args:
+        dataset: a :class:`fiftyone.core.dataset.Dataset`
+        ids: the sample IDs
+        username: the uploader's username
+    """
+    dataset.select(ids).set_values(UPLOADED_BY_FIELD, [username] * len(ids))
+    if UPLOADED_BY_FIELD not in dataset.list_indexes():
+        dataset.create_index(UPLOADED_BY_FIELD)
 
 
 def imported_sources(dataset):

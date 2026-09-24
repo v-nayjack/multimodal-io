@@ -113,7 +113,7 @@ class ImportMultimodal(foo.Operator):
             dataset,
             result,
             tags=ctx.params.get("tags", None) or None,
-            compute_metadata=ctx.params.get("compute_metadata", True),
+            compute_metadata=True,
             progress=_progress(ctx),
         )
 
@@ -254,7 +254,7 @@ class UploadMultimodal(foo.Operator):
             dataset,
             result,
             tags=ctx.params.get("tags", None) or None,
-            compute_metadata=ctx.params.get("compute_metadata", True),
+            compute_metadata=True,
         )
 
         _finish(ctx, dataset, result)
@@ -331,17 +331,6 @@ def _options_inputs(inputs, fmt):
         description="Optional tag(s) to add to each new sample",
         view=types.AutocompleteView(multiple=True),
     )
-
-    if fmt == core.MCAP:
-        inputs.bool(
-            "compute_metadata",
-            default=True,
-            label="Compute metadata",
-            description=(
-                "Read each MCAP's topics, time range, and message counts"
-            ),
-            view=types.CheckboxView(),
-        )
 
 
 def _target_dataset_name(ctx):

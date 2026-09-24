@@ -80,6 +80,35 @@ The plugin never asks for, stores, or logs bucket keys.
     need an API key. Local credentials (eg `AWS_*` environment variables) are
     used if present
 
+### Bucket CORS
+
+The App reads MCAP and LeRobot files straight from the bucket using HTTP range
+requests, so the bucket's CORS policy must allow your deployment's origin and
+**expose** the range headers. Without `ExposeHeaders`, imports succeed but
+samples fail to open with
+`Failed to read recording: Expected Content-Range header for byte-range response`.
+
+S3 example:
+
+```json
+[
+    {
+        "AllowedOrigins": ["https://your-deployment.fiftyone.ai"],
+        "AllowedMethods": ["GET", "HEAD"],
+        "AllowedHeaders": ["*"],
+        "ExposeHeaders": [
+            "Content-Range",
+            "Content-Length",
+            "Accept-Ranges",
+            "Content-Type"
+        ],
+        "MaxAgeSeconds": 3600
+    }
+]
+```
+
+On GCS, list the same headers under `responseHeader`.
+
 ## Operators
 
 ### import_multimodal

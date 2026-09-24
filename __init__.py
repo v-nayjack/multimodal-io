@@ -10,6 +10,7 @@ from the browser.
 |
 """
 
+import importlib
 import os
 
 import fiftyone as fo
@@ -23,6 +24,11 @@ except ImportError:
     # Imported outside of FiftyOne's plugin loader, eg by pytest
     import core
     import uploads
+
+# FiftyOne reloads this module when the plugin is updated, but not the
+# submodules it imports, so reload them too to avoid mixing old and new code
+core = importlib.reload(core)
+uploads = importlib.reload(uploads)
 
 
 ROOT_SECRET = "FIFTYONE_MULTIMODAL_IO_ROOT"

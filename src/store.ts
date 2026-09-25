@@ -217,6 +217,14 @@ export async function startBatch(
         added: result.num_added,
       });
       setState((s) => ({ refresh: s.refresh + 1 }));
+      // Show each new sample right away when uploading into the open dataset
+      // (this also replaces an empty dataset's "No samples yet" page with
+      // the grid)
+      if (datasetName === currentDataset) {
+        runOperator("finish_upload_batch", { dataset_name: datasetName }).catch(
+          () => undefined
+        );
+      }
     } catch (e: any) {
       if (isAbort(e)) {
         updateItem(current.id, { status: "cancelled" });
@@ -235,11 +243,6 @@ export async function startBatch(
   window.removeEventListener("beforeunload", warnOnUnload);
   setState({ running: false, finished: completed > 0 ? datasetName : null });
 
-  if (completed > 0 && datasetName === currentDataset) {
-    runOperator("finish_upload_batch", { dataset_name: datasetName }).catch(
-      () => undefined
-    );
-  }
 }
 
 export function isActive(status: Status): boolean {

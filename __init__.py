@@ -160,6 +160,7 @@ class ImportMultimodal(foo.Operator):
 
 
 PANEL_NAME = "MultimodalUploadPanel"
+DIALOG_COMPONENT = "MultimodalUploadDialog"
 
 
 class UploadMultimodal(foo.Operator):
@@ -186,10 +187,54 @@ class UploadMultimodal(foo.Operator):
                 "dataset but can upload into a different or new one"
             )
 
-        ctx.trigger(
-            "open_panel",
-            params=dict(name=PANEL_NAME, isActive=True, layout="horizontal"),
+        # An empty dataset shows FiftyOne's "No samples yet" page instead of
+        # the grid, so there is nowhere for the panel to open. Show the same
+        # upload UI in a dialog instead
+        if len(ctx.dataset) == 0:
+            ctx.prompt("%s/upload_multimodal_dialog" % self.plugin_name)
+            return
+
+        _open_panel(ctx)
+
+
+class UploadMultimodalDialog(foo.Operator):
+    @property
+    def config(self):
+        return foo.OperatorConfig(
+            name="upload_multimodal_dialog",
+            label="Upload MCAP files",
+            unlisted=True,
         )
+
+    def resolve_input(self, ctx):
+        inputs = types.Object()
+        inputs.define_property(
+            "upload",
+            types.String(),
+            view=types.View(component=DIALOG_COMPONENT),
+        )
+        return types.Property(
+            inputs,
+            view=types.PromptView(
+                label="Upload MCAP files",
+                submit_button_label="Done",
+                cancel_button_label="Close",
+            ),
+        )
+
+    def execute(self, ctx):
+        # Once a file is imported the dataset has a grid, so move over to the
+        # panel, which shows the same upload queue
+        if ctx.dataset is not None and len(ctx.dataset) > 0:
+            ctx.trigger("reload_dataset")
+            _open_panel(ctx)
+
+
+def _open_panel(ctx):
+    ctx.trigger(
+        "open_panel",
+        params=dict(name=PANEL_NAME, isActive=True, layout="horizontal"),
+    )
 
 
 class GetUploadInfo(foo.Operator):
@@ -556,6 +601,7 @@ def _form(inputs, label):
 def register(p):
     p.register(ImportMultimodal)
     p.register(UploadMultimodal)
+    p.register(UploadMultimodalDialog)
     p.register(GetUploadInfo)
     p.register(StartLargeUpload)
     p.register(ResumeLargeUpload)

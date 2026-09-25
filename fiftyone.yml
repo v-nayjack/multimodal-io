@@ -12,6 +12,7 @@ license: Apache 2.0
 operators:
   - import_multimodal
   - upload_multimodal
+  - upload_multimodal_dialog
   - get_upload_info
   - start_large_upload
   - resume_large_upload

@@ -1,7 +1,7 @@
 import React from "react";
 import { PluginComponentType, registerComponent } from "@fiftyone/plugins";
 import { SvgIcon } from "@mui/material";
-import UploadPanel from "./UploadPanel";
+import UploadPanel, { UploadDialog } from "./UploadPanel";
 
 // Cloud upload icon path (from @mui/icons-material/CloudUpload)
 function UploadIcon(props: any) {
@@ -22,4 +22,13 @@ registerComponent({
   panelOptions: {
     surfaces: "grid",
   },
+});
+
+// Upload UI inside the upload dialog (used for empty datasets)
+registerComponent({
+  name: "MultimodalUploadDialog",
+  label: "Upload MCAP files",
+  component: UploadDialog,
+  type: PluginComponentType.Component,
+  activator: () => true,
 });

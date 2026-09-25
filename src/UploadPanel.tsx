@@ -46,7 +46,20 @@ const STATUS_LABEL: Record<Status, string> = {
   cancelled: "Cancelled",
 };
 
+/** The upload panel shown next to the sample grid. */
 export default function UploadPanel() {
+  return <UploadForm />;
+}
+
+/**
+ * The same upload UI inside the upload dialog, used for empty datasets where
+ * FiftyOne shows no grid and therefore can't open panels.
+ */
+export function UploadDialog() {
+  return <UploadForm embedded />;
+}
+
+function UploadForm({ embedded = false }: { embedded?: boolean }) {
   const currentDataset = useRecoilValue(fos.datasetName) as string | null;
   const state = useSyncExternalStore(subscribe, getState);
   const { items, running, root, tags, finished, refresh } = state;
@@ -103,15 +116,29 @@ export default function UploadPanel() {
   ).length;
 
   return (
-    <Box sx={{ p: 2, height: "100%", overflow: "auto" }}>
+    <Box
+      sx={
+        embedded
+          ? { minWidth: { sm: 560 } }
+          : { p: 2, height: "100%", overflow: "auto" }
+      }
+    >
       <Stack spacing={2} sx={{ maxWidth: 900 }}>
         <Box>
-          <Typography variant="h6">Upload MCAP files</Typography>
+          {!embedded && (
+            <Typography variant="h6">Upload MCAP files</Typography>
+          )}
           <Typography variant="body2" color="text.secondary">
-            Files of any size go straight from your browser to the bucket, then
-            get imported. Uploads keep going if you close this panel; keep the
-            browser tab open until they finish. Interrupted uploads resume when
-            you add the same file again.
+            {embedded
+              ? "Files of any size go straight from your browser to the " +
+                "bucket, then get imported. Once the first file is imported, " +
+                "click Done to see it in the dataset; the rest keep uploading " +
+                "in the upload panel. Keep the browser tab open until uploads " +
+                "finish."
+              : "Files of any size go straight from your browser to the " +
+                "bucket, then get imported. Uploads keep going if you close " +
+                "this panel; keep the browser tab open until they finish. " +
+                "Interrupted uploads resume when you add the same file again."}
           </Typography>
         </Box>
 

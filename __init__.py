@@ -223,11 +223,11 @@ class UploadMultimodalDialog(foo.Operator):
         )
 
     def execute(self, ctx):
-        # Once a file is imported the dataset has a grid, so move over to the
-        # panel, which shows the same upload queue
+        # The "No samples yet" page only switches to the grid when the page
+        # loads, so reload it once the dataset has samples. The browser asks
+        # first if uploads are still running
         if ctx.dataset is not None and len(ctx.dataset) > 0:
-            ctx.trigger("reload_dataset")
-            _open_panel(ctx)
+            ctx.trigger("%s/reload_page" % self.plugin_name)
 
 
 def _open_panel(ctx):

@@ -2,6 +2,7 @@ import React from "react";
 import { PluginComponentType, registerComponent } from "@fiftyone/plugins";
 import { SvgIcon } from "@mui/material";
 import UploadPanel, { UploadDialog } from "./UploadPanel";
+import "./operators";
 
 // Cloud upload icon path (from @mui/icons-material/CloudUpload)
 function UploadIcon(props: any) {

@@ -19,6 +19,7 @@ operators:
   - complete_large_upload
   - abort_large_upload
   - finish_upload_batch
+  - reload_page
 panels:
   - MultimodalUploadPanel
 secrets:

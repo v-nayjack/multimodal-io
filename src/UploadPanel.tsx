@@ -103,6 +103,17 @@ function UploadForm({ embedded = false }: { embedded?: boolean }) {
   }, [datasetName, root, refresh]);
 
   const selectedRoot = root || info?.root || "";
+
+  // An empty dataset shows FiftyOne's "No samples yet" page, which only
+  // switches to the grid when the page loads. Once the dialog's uploads into
+  // the open dataset finish, reload so the new samples appear
+  const willReload =
+    embedded && !running && !!finished && finished === currentDataset;
+  useEffect(() => {
+    if (!willReload) return;
+    const timer = setTimeout(() => window.location.reload(), 1500);
+    return () => clearTimeout(timer);
+  }, [willReload]);
   const hasWork = items.some((it) => it.status !== "done");
   const canStart =
     !running &&
@@ -131,10 +142,8 @@ function UploadForm({ embedded = false }: { embedded?: boolean }) {
           <Typography variant="body2" color="text.secondary">
             {embedded
               ? "Files of any size go straight from your browser to the " +
-                "bucket, then get imported. Once the first file is imported, " +
-                "click Done to see it in the dataset; the rest keep uploading " +
-                "in the upload panel. Keep the browser tab open until uploads " +
-                "finish."
+                "bucket, then get imported. Keep this dialog open until your " +
+                "uploads finish; the dataset then opens automatically."
               : "Files of any size go straight from your browser to the " +
                 "bucket, then get imported. Uploads keep going if you close " +
                 "this panel; keep the browser tab open until they finish. " +
@@ -150,6 +159,8 @@ function UploadForm({ embedded = false }: { embedded?: boolean }) {
           value={selectedRoot}
           onChange={(e) => setField("root", e.target.value)}
           disabled={running || !info?.roots?.length}
+          // Draw the list above the upload dialog, not behind it
+          SelectProps={{ MenuProps: { style: { zIndex: 99999 } } }}
           helperText={
             (info?.roots?.length ?? 0) > 1
               ? "Allowed locations are set by your admin"
@@ -191,6 +202,9 @@ function UploadForm({ embedded = false }: { embedded?: boolean }) {
           />
         </Stack>
 
+        {willReload && (
+          <Alert severity="success">Upload finished, opening the dataset...</Alert>
+        )}
         {info?.error && <Alert severity="error">{info.error}</Alert>}
         {!info?.error && info?.target_dir && (
           <Typography variant="body2" color="text.secondary">

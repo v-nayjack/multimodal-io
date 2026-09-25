@@ -177,8 +177,9 @@ grid (also in the operator browser and the `+` tab menu).
 In an **empty dataset** (for example one you just created), FiftyOne shows its
 "No samples yet" page instead of the grid, so panels can't open there. Use
 **browse operations** > **Upload MCAP files** instead: the same upload UI opens
-in a dialog. After the first file is imported, click **Done** to see the
-dataset; the remaining files keep uploading in the panel.
+in a dialog. Keep the dialog open until your uploads finish; the page then
+reloads and shows the new samples (clicking **Done** early also reloads, and
+the browser asks first if uploads are still running).
 
 Then:
 

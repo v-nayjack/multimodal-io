@@ -73,16 +73,23 @@ or imported it, so you can filter by person in the App sidebar. If your team use
 
 ### Credentials
 
-Bucket access always goes through the deployment's
-[cloud credentials](https://docs.voxel51.com/enterprise/cloud_media.html).
-The plugin never asks for, stores, or logs bucket keys.
+The plugin never asks for, stores, or logs bucket keys. In the App, all bucket
+access happens on the server, as the deployment, so **users need no bucket
+permissions of their own**, only a FiftyOne role that can run the plugin.
 
--   In the App, operators use the credentials the admin configured, so users
-    need no bucket access of their own
--   The CLI connects with `FIFTYONE_API_URI` and `FIFTYONE_API_KEY`. In this
-    mode, the SDK fetches the deployment's cloud credentials, so users only
-    need an API key. Local credentials (eg `AWS_*` environment variables) are
-    used if present
+The server can get bucket access either way:
+
+-   **Stored credentials**: added by an admin in Settings > Cloud storage
+    ([docs](https://docs.voxel51.com/enterprise/cloud_media.html))
+-   **Container credentials**: provided to the FiftyOne containers by the
+    platform, eg an IAM role for the pods (IRSA), Workload Identity, or
+    mounted credential files. See [Deployment setup](#deployment-setup)
+
+The **upload script** is different: it runs on the user's machine. It works
+when the deployment has *stored* credentials (the SDK fetches them with the
+user's API key) or when the user has their own bucket credentials. On
+deployments that only use container credentials, users should upload with the
+**Upload MCAP files** panel instead.
 
 ### Bucket CORS
 
@@ -164,8 +171,8 @@ and a LeRobot folder that was already imported is not added again.
 
 ### Upload MCAP files panel
 
-Inside any dataset, open the panel from the `+` tab menu, or click **Upload
-MCAP files** in the operator browser. Then:
+Inside any dataset, click the **Upload MCAP files** button above the sample
+grid (also in the operator browser and the `+` tab menu). Then:
 
 1.  **Upload to**: pick one of the locations your admin allowed
     (`FIFTYONE_MULTIMODAL_IO_ROOT`). The panel remembers your choice
@@ -180,7 +187,8 @@ How it works: the plugin creates short-lived signed upload links for your
 folder only, and the browser sends the bytes straight to the bucket, never
 through the FiftyOne server. S3/MinIO files go up in 64 MiB+ parts, four at
 a time; GCS uses a resumable upload session; Azure uses a single upload (up to
-5000 MiB).
+5000 MiB). If a signed link expires mid-upload (common with temporary,
+role-based server credentials), the panel fetches fresh links and continues.
 
 -   **Keep the browser tab open** until uploads finish (the page warns
     before closing). Closing the panel or opening another dataset is fine:
@@ -195,12 +203,105 @@ a time; GCS uses a resumable upload session; Azure uses a single upload (up to
 -   A file that is already fully uploaded is not sent again
 -   Leaving the dataset blank isn't allowed; a name that doesn't exist yet
     creates a new dataset. You can upload into any dataset, not just the one
-    you have open
+    you have open. Each file shows the folder it goes to
+-   When no upload is running, the Dataset field follows the dataset you have
+    open
+
+## Deployment setup
+
+### Server containers that need bucket access
+
+If your deployment uses container credentials instead of stored ones, give
+them to these containers:
+
+| Container       | Why                                              |
+| --------------- | ------------------------------------------------ |
+| `fiftyone-app`  | Browsing folders, reading files                  |
+| `teams-plugins` | Plugin operators (if you run dedicated plugins)  |
+| `teams-do`      | Background (delegated) imports                   |
+| `teams-api`     | Signed links for viewing media                   |
+
+Docker Compose example with mounted credential files, in
+`compose.override.yaml` (repeat for each container above):
+
+```yaml
+services:
+  fiftyone-app:
+    environment:
+      AWS_SHARED_CREDENTIALS_FILE: /opt/creds/aws-credentials
+      AWS_DEFAULT_REGION: us-east-1
+      GOOGLE_APPLICATION_CREDENTIALS: /opt/creds/gcs.json
+    volumes:
+      - /path/to/creds/aws-credentials:/opt/creds/aws-credentials:ro
+      - /path/to/creds/gcs.json:/opt/creds/gcs.json:ro
+```
+
+On Kubernetes, attach the IAM role (or equivalent) to the service accounts of
+the same pods.
+
+### Permissions for the deployment's role (S3)
+
+Scope these to the upload location so nothing can be written anywhere else:
+
+| Permission                     | Used for                                            |
+| ------------------------------ | --------------------------------------------------- |
+| `s3:ListBucket` (prefix only)  | Browsing, finding MCAP/LeRobot files                |
+| `s3:GetObject`                 | Importing, viewing recordings, checking uploads     |
+| `s3:PutObject`                 | Uploads (incl. multipart steps) and `_import.json`  |
+| `s3:ListMultipartUploadParts`  | Resuming an interrupted upload                      |
+| `s3:AbortMultipartUpload`      | Cancel and Cancel all                               |
+| `kms:GenerateDataKey`, `kms:Decrypt` | Only if the bucket uses KMS encryption       |
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": "s3:ListBucket",
+            "Resource": "arn:aws:s3:::UPLOAD_BUCKET",
+            "Condition": {"StringLike": {"s3:prefix": ["UPLOAD_PREFIX/*"]}}
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:ListMultipartUploadParts",
+                "s3:AbortMultipartUpload"
+            ],
+            "Resource": "arn:aws:s3:::UPLOAD_BUCKET/UPLOAD_PREFIX/*"
+        }
+    ]
+}
+```
+
+Then set `FIFTYONE_MULTIMODAL_IO_ROOT` to `s3://UPLOAD_BUCKET/UPLOAD_PREFIX`.
+
+### Bucket CORS with Terraform (S3)
+
+```hcl
+resource "aws_s3_bucket_cors_configuration" "fiftyone_uploads" {
+  bucket = "UPLOAD_BUCKET"
+  cors_rule {
+    allowed_origins = ["https://your-deployment.fiftyone.ai"]
+    allowed_methods = ["GET", "HEAD", "PUT"]
+    allowed_headers = ["*"]
+    expose_headers  = ["Content-Range", "Content-Length", "Accept-Ranges", "Content-Type", "ETag"]
+    max_age_seconds = 3600
+  }
+}
+```
+
+A bucket has a single CORS configuration, so if one already exists, **add
+these to it** instead of creating a second one, which would replace the rules
+that let recordings render.
 
 ## Upload script
 
-`upload.py` needs the FiftyOne Enterprise SDK and a connection to your
-deployment:
+`upload.py` needs the FiftyOne Enterprise SDK, a connection to your
+deployment, and bucket access from your machine (see
+[Credentials](#credentials)):
 
 ```shell
 export FIFTYONE_API_URI=https://your-deployment.fiftyone.ai

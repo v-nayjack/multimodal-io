@@ -133,7 +133,10 @@ export async function uploadFile(
 
   try {
     if (plan.mode === "s3_multipart") {
-      parts = await uploadS3(file, plan, opts);
+      const uploadId = plan.upload_id;
+      parts = await uploadS3(file, plan, opts, () =>
+        runOperator<Plan>("resume_large_upload", { ...base, upload_id: uploadId })
+      );
     } else if (plan.mode === "gcs_resumable") {
       await uploadGcs(file, plan, resumedGcs, opts);
     } else if (plan.mode === "single_put") {
@@ -193,9 +196,29 @@ export async function cancelUpload(
 async function uploadS3(
   file: File,
   plan: Plan,
-  opts: UploadOptions
+  opts: UploadOptions,
+  refreshPlan: () => Promise<Plan>
 ): Promise<{ number: number; etag: string }[]> {
   const partSize = plan.part_size!;
+  // Signed part links expire; with temporary (role-based) server credentials
+  // that can be after about an hour. When a part is refused, fetch fresh
+  // links once for all workers and retry
+  const urls = new Map<number, string>(
+    plan.parts!.map((p) => [p.number, p.url])
+  );
+  let refreshing: Promise<void> | null = null;
+  const refreshUrls = () => {
+    if (!refreshing) {
+      refreshing = refreshPlan()
+        .then((fresh) => {
+          fresh.parts?.forEach((p) => urls.set(p.number, p.url));
+        })
+        .finally(() => {
+          refreshing = null;
+        });
+    }
+    return refreshing;
+  };
   const done = new Map<number, string>(
     (plan.done ?? []).map((p) => [p.number, p.etag])
   );
@@ -218,8 +241,8 @@ async function uploadS3(
       const start = (current.number - 1) * partSize;
       const blob = file.slice(start, start + partBytes(current.number));
       const xhr = await withRetries(async () => {
-        const x = await put(
-          current.url,
+        let x = await put(
+          urls.get(current.number)!,
           blob,
           undefined,
           (loaded) => {
@@ -228,6 +251,19 @@ async function uploadS3(
           },
           opts.signal
         );
+        if (x.status === 403 || x.status === 400) {
+          await refreshUrls();
+          x = await put(
+            urls.get(current.number)!,
+            blob,
+            undefined,
+            (loaded) => {
+              sent.set(current.number, loaded);
+              report();
+            },
+            opts.signal
+          );
+        }
         assertOk(x, `Part ${current.number}`);
         return x;
       }, opts.signal);

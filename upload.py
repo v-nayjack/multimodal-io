@@ -25,9 +25,11 @@ The root and path template can also be set with the
 ``FIFTYONE_MULTIMODAL_IO_ROOT`` and ``FIFTYONE_MULTIMODAL_IO_PATH_TEMPLATE``
 environment variables.
 
-When connected to FiftyOne Enterprise via ``FIFTYONE_API_URI`` and
-``FIFTYONE_API_KEY``, bucket access uses the cloud credentials configured on
-the deployment, so no separate bucket keys are needed.
+Bucket access happens from this machine. When connected to FiftyOne
+Enterprise via ``FIFTYONE_API_URI`` and ``FIFTYONE_API_KEY``, the SDK uses the
+cloud credentials stored on the deployment, if any; otherwise you need your
+own bucket credentials. On deployments that only give the FiftyOne containers
+bucket access, use the "Upload MCAP files" panel in the App instead.
 
 | Copyright 2017-2026, Voxel51, Inc.
 | `voxel51.com <https://voxel51.com/>`_

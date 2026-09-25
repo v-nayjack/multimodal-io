@@ -16,6 +16,7 @@ import {
   addFiles,
   cancelAll,
   cancelItem,
+  followDataset,
   getState,
   isActive,
   Item,
@@ -53,15 +54,25 @@ export default function UploadPanel() {
   const [info, setInfo] = useState<Info | null>(null);
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const latestRequest = useRef(0);
 
   // Show where files will go and whether the dataset can take them
+  // Follow the open dataset while no upload is running
   useEffect(() => {
+    followDataset(currentDataset);
+  }, [currentDataset]);
+
+  useEffect(() => {
+    const requestId = ++latestRequest.current;
     const timer = setTimeout(() => {
       runOperator<Info>("get_upload_info", {
         dataset_name: datasetName.trim(),
         root,
       })
         .then((next) => {
+          // Only the newest lookup may update the form; an older one that
+          // finishes late would otherwise overwrite it
+          if (requestId !== latestRequest.current) return;
           // A remembered choice that is no longer allowed falls back to the
           // first allowed location
           if (root && next.roots && !next.roots.includes(root)) {
@@ -70,9 +81,10 @@ export default function UploadPanel() {
           }
           setInfo(next);
         })
-        .catch((e) =>
-          setInfo({ username: null, target_dir: null, error: e.message })
-        );
+        .catch((e) => {
+          if (requestId !== latestRequest.current) return;
+          setInfo({ username: null, target_dir: null, error: e.message });
+        });
     }, 400);
     return () => clearTimeout(timer);
   }, [datasetName, root, refresh]);
@@ -220,7 +232,14 @@ export default function UploadPanel() {
           <Button
             variant="contained"
             disabled={!canStart}
-            onClick={() => startBatch(currentDataset, selectedRoot, datasetName)}
+            onClick={() =>
+              startBatch(
+                currentDataset,
+                selectedRoot,
+                datasetName,
+                info?.target_dir
+              )
+            }
           >
             {running ? `Uploading (${pending} left)...` : "Start upload"}
           </Button>
@@ -266,9 +285,20 @@ function FileRow({ item }: { item: Item }) {
         alignItems="baseline"
         spacing={1}
       >
-        <Typography variant="body2" sx={{ wordBreak: "break-all" }}>
-          {item.file.name}
-        </Typography>
+        <Box sx={{ minWidth: 0 }}>
+          <Typography variant="body2" sx={{ wordBreak: "break-all" }}>
+            {item.file.name}
+          </Typography>
+          {item.dest && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ wordBreak: "break-all", fontFamily: "monospace" }}
+            >
+              → {item.dest}/
+            </Typography>
+          )}
+        </Box>
         <Stack direction="row" spacing={1} alignItems="baseline">
           <Typography
             variant="caption"

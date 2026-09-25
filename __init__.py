@@ -172,6 +172,13 @@ class UploadMultimodal(foo.Operator):
             dark_icon="/assets/icon-dark.svg",
         )
 
+    def resolve_placement(self, ctx):
+        # No icon, so the App shows the words on the button
+        return types.Placement(
+            types.Places.SAMPLES_GRID_ACTIONS,
+            types.Button(label="Upload MCAP files", prompt=False),
+        )
+
     def execute(self, ctx):
         if ctx.dataset is None:
             raise ValueError(

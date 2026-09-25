@@ -24,6 +24,7 @@ export type Item = {
   startedAt?: number;
   error?: string;
   added?: number;
+  dest?: string;
 };
 
 export type State = {
@@ -34,6 +35,7 @@ export type State = {
   tags: string;
   finished: string | null;
   refresh: number;
+  followedDataset: string | null;
 };
 
 const ROOT_PREF_KEY = "multimodal-io:upload-root";
@@ -46,6 +48,7 @@ let state: State = {
   tags: "",
   finished: null,
   refresh: 0,
+  followedDataset: null,
 };
 
 const listeners = new Set<() => void>();
@@ -132,10 +135,32 @@ export function cancelAll() {
 }
 
 /** Uploads every waiting, failed, or cancelled file, one at a time. */
+/**
+ * Called when the open dataset changes. While idle, the Dataset field goes
+ * back to following the open dataset and finished rows are cleared; while
+ * uploading, nothing changes so the batch keeps its target.
+ */
+export function followDataset(currentDataset: string | null) {
+  if (state.followedDataset === currentDataset) return;
+  if (state.running) {
+    setState({ followedDataset: currentDataset });
+    return;
+  }
+  setState((s) => ({
+    followedDataset: currentDataset,
+    datasetName: null,
+    finished: null,
+    items: s.items.filter(
+      (it) => it.status !== "done" && it.status !== "cancelled"
+    ),
+  }));
+}
+
 export async function startBatch(
   currentDataset: string | null,
   root: string,
-  shownDatasetName: string
+  shownDatasetName: string,
+  targetDir?: string | null
 ) {
   if (state.running) return;
   // Use the name the panel shows, which defaults to the open dataset until
@@ -170,7 +195,12 @@ export async function startBatch(
     const current = item;
     const controller = new AbortController();
     controllers.set(current.id, controller);
-    updateItem(current.id, { status: "starting", sent: 0, startedAt: Date.now() });
+    updateItem(current.id, {
+      status: "starting",
+      sent: 0,
+      startedAt: Date.now(),
+      dest: targetDir ?? undefined,
+    });
     try {
       const result = await uploadFile(current.file, {
         root,

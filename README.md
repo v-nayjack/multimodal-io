@@ -401,3 +401,12 @@ Tests:
 ```shell
 pytest tests
 ```
+
+## Contributing
+
+Pull requests go to the `develop` branch; `main` holds tested releases. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+[Apache License 2.0](LICENSE). Copyright 2026 Vinay Jakkali.

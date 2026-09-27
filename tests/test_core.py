@@ -3,8 +3,8 @@ Unit tests for the storage-agnostic helpers in ``multimodal_io/core.py``.
 
 These use local folders only, so they need no cloud credentials or database.
 
-| Copyright 2017-2026, Voxel51, Inc.
-| `voxel51.com <https://voxel51.com/>`_
+| Copyright 2026, Vinay Jakkali
+| Licensed under the Apache License, Version 2.0
 |
 """
 

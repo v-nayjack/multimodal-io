@@ -5,8 +5,8 @@ Browse any cloud bucket the deployment can reach and turn MCAP recordings or
 LeRobot datasets into FiftyOne datasets, or upload a small MCAP file straight
 from the browser.
 
-| Copyright 2017-2026, Voxel51, Inc.
-| `voxel51.com <https://voxel51.com/>`_
+| Copyright 2026, Vinay Jakkali
+| Licensed under the Apache License, Version 2.0
 |
 """
 

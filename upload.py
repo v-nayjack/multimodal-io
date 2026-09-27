@@ -31,8 +31,8 @@ cloud credentials stored on the deployment, if any; otherwise you need your
 own bucket credentials. On deployments that only give the FiftyOne containers
 bucket access, use the "Upload MCAP files" panel in the App instead.
 
-| Copyright 2017-2026, Voxel51, Inc.
-| `voxel51.com <https://voxel51.com/>`_
+| Copyright 2026, Vinay Jakkali
+| Licensed under the Apache License, Version 2.0
 |
 """
 

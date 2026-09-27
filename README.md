@@ -75,7 +75,9 @@ or imported it, so you can filter by person in the App sidebar. If your team use
 
 The plugin never asks for, stores, or logs bucket keys. In the App, all bucket
 access happens on the server, as the deployment, so **users need no bucket
-permissions of their own**, only a FiftyOne role that can run the plugin.
+permissions of their own**, only a FiftyOne role that can create datasets and
+run the plugin (Member or above), plus edit access to any existing dataset
+they add to.
 
 The server can get bucket access either way:
 
@@ -230,36 +232,61 @@ them to these containers:
 | `teams-do`      | Background (delegated) imports                   |
 | `teams-api`     | Signed links for viewing media                   |
 
-Docker Compose example with mounted credential files, in
-`compose.override.yaml` (repeat for each container above):
+The plugin uses the standard AWS and Google credential lookup, so any method
+your platform supports works without changes. Prefer methods that don't put
+long-lived keys on disk:
+
+| Where FiftyOne runs            | Recommended                                              |
+| ------------------------------ | -------------------------------------------------------- |
+| Kubernetes on AWS (EKS)        | IAM role for the pods' service account (IRSA or EKS Pod Identity) |
+| Docker Compose on AWS (EC2)    | IAM role attached to the VM (instance profile)           |
+| Google Cloud (GKE or VM)       | Workload Identity or the VM's service account            |
+| Anywhere, for quick testing    | Mounted credential files (below)                          |
+
+Mounted credential files, for testing with Docker Compose. Add this to
+`compose.override.yaml` for each container above. The file names follow the
+usual conventions (AWS's `credentials` ini file and a Google service account
+`key.json`), but any name works as long as the variables point to it:
 
 ```yaml
 services:
   fiftyone-app:
     environment:
-      AWS_SHARED_CREDENTIALS_FILE: /opt/creds/aws-credentials
-      AWS_DEFAULT_REGION: us-east-1
-      GOOGLE_APPLICATION_CREDENTIALS: /opt/creds/gcs.json
+      AWS_SHARED_CREDENTIALS_FILE: /opt/creds/aws/credentials
+      AWS_DEFAULT_REGION: us-east-1   # your bucket's region
+      GOOGLE_APPLICATION_CREDENTIALS: /opt/creds/gcp/key.json
     volumes:
-      - /path/to/creds/aws-credentials:/opt/creds/aws-credentials:ro
-      - /path/to/creds/gcs.json:/opt/creds/gcs.json:ro
+      - /path/to/aws/credentials:/opt/creds/aws/credentials:ro
+      - /path/to/gcp/key.json:/opt/creds/gcp/key.json:ro
 ```
 
-On Kubernetes, attach the IAM role (or equivalent) to the service accounts of
-the same pods.
+Keep these files readable by the containers (eg `chmod 644`) but inside a
+private folder on the host (eg `chmod 700`), and never commit them.
 
 ### Permissions for the deployment's role (S3)
 
-Scope these to the upload location so nothing can be written anywhere else:
+These go on the role the FiftyOne containers use, not on individual users.
+Scope them to the upload location so nothing can be written anywhere else:
 
-| Permission                     | Used for                                            |
-| ------------------------------ | --------------------------------------------------- |
-| `s3:ListBucket` (prefix only)  | Browsing, finding MCAP/LeRobot files                |
-| `s3:GetObject`                 | Importing, viewing recordings, checking uploads     |
-| `s3:PutObject`                 | Uploads (incl. multipart steps) and `_import.json`  |
-| `s3:ListMultipartUploadParts`  | Resuming an interrupted upload                      |
-| `s3:AbortMultipartUpload`      | Cancel and Cancel all                               |
-| `kms:GenerateDataKey`, `kms:Decrypt` | Only if the bucket uses KMS encryption       |
+| Permission                           | Used for                                                  | Level |
+| ------------------------------------ | --------------------------------------------------------- | ----- |
+| `s3:ListBucket` (prefix only)        | Browsing folders, finding MCAP/LeRobot files              | Required |
+| `s3:GetObject`                       | Importing, viewing recordings, checking finished uploads  | Required |
+| `s3:PutObject`                       | Uploads (including multipart steps) and `_import.json`    | Required for uploads |
+| `s3:ListMultipartUploadParts`        | Resuming interrupted uploads, and getting fresh upload links when they expire | Required for uploads with temporary (role-based) credentials; recommended otherwise |
+| `s3:AbortMultipartUpload`            | Cancel and Cancel all discard the partial upload           | Recommended |
+| `kms:GenerateDataKey`, `kms:Decrypt` | Reading and writing a KMS-encrypted bucket                | Required only if the bucket uses KMS |
+
+Without `PutObject`, the plugin still imports and displays data that is
+already in the bucket, but can't upload. Without `AbortMultipartUpload`,
+cancelled uploads leave hidden partial data behind; a bucket lifecycle rule
+that aborts incomplete multipart uploads after a few days cleans that up
+either way.
+
+If the role already reads this bucket (for example, recordings already render
+in the App), it most likely has `ListBucket` and `GetObject`; the new parts are
+usually `PutObject`, `ListMultipartUploadParts`, `AbortMultipartUpload`, and
+the CORS change below.
 
 ```json
 {
@@ -308,9 +335,16 @@ that let recordings render.
 
 ## Upload script
 
-`upload.py` needs the FiftyOne Enterprise SDK, a connection to your
-deployment, and bucket access from your machine (see
-[Credentials](#credentials)):
+`upload.py` uploads from the command line instead of the App. It runs on
+your machine, so it needs bucket access from there:
+
+| Your deployment                                  | Use                           |
+| ------------------------------------------------ | ----------------------------- |
+| Stores bucket credentials in Settings > Cloud storage | Script or panel (the script fetches the stored credentials with your API key) |
+| Only gives the FiftyOne containers bucket access | The **Upload MCAP files** panel, unless you have your own bucket credentials |
+| Scripted or pipeline uploads with their own credentials | Script |
+
+It needs the FiftyOne Enterprise SDK and a connection to your deployment:
 
 ```shell
 export FIFTYONE_API_URI=https://your-deployment.fiftyone.ai

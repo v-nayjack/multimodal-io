@@ -19,14 +19,16 @@ import fiftyone.operators as foo
 import fiftyone.operators.types as types
 
 try:
-    from . import core, uploads
+    from . import clients, core, uploads
 except ImportError:
     # Imported outside of FiftyOne's plugin loader, eg by pytest
+    import clients
     import core
     import uploads
 
 # FiftyOne reloads this module when the plugin is updated, but not the
 # submodules it imports, so reload them too to avoid mixing old and new code
+clients = importlib.reload(clients)
 core = importlib.reload(core)
 uploads = importlib.reload(uploads)
 
@@ -311,7 +313,12 @@ class ResumeLargeUpload(foo.Operator):
 
     def execute(self, ctx):
         path, size = _upload_target(ctx)
-        plan = uploads.resume_upload(path, size, ctx.params["upload_id"])
+        plan = uploads.resume_upload(
+            path,
+            size,
+            upload_id=ctx.params.get("upload_id", None),
+            mode=ctx.params.get("mode", None) or uploads.S3_MULTIPART,
+        )
         plan["path"] = path
         return plan
 
@@ -330,6 +337,7 @@ class CompleteLargeUpload(foo.Operator):
                 mode,
                 upload_id=ctx.params.get("upload_id", None),
                 parts=ctx.params.get("parts", None),
+                size=size,
             )
 
         actual = fos.get_file_size(path)

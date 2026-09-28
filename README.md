@@ -146,6 +146,10 @@ GCS example (`gcloud storage buckets update gs://BUCKET --cors-file=cors.json`):
 ]
 ```
 
+Azure: in the storage account, **Settings > Resource sharing (CORS) > Blob
+service**, add allowed origin `https://your-deployment.fiftyone.ai`, methods
+`GET, HEAD, PUT, OPTIONS`, allowed and exposed headers `*`, max age `3600`.
+
 ## Operators
 
 ### import_multimodal
@@ -197,8 +201,8 @@ Then:
 How it works: the plugin creates short-lived signed upload links for your
 folder only, and the browser sends the bytes straight to the bucket, never
 through the FiftyOne server. S3/MinIO files go up in 64 MiB+ parts, four at
-a time; GCS uses a resumable upload session; Azure uses a single upload (up to
-5000 MiB). If a signed link expires mid-upload (common with temporary,
+a time; GCS uses a resumable upload session; Azure uploads blocks of the same
+size, four at a time. If a signed link expires mid-upload (common with temporary,
 role-based server credentials), the panel fetches fresh links and continues.
 
 -   **Keep the browser tab open** until uploads finish (the page warns
@@ -314,6 +318,20 @@ the CORS change below.
 
 Then set `FIFTYONE_MULTIMODAL_IO_ROOT` to `s3://UPLOAD_BUCKET/UPLOAD_PREFIX`.
 
+### Permissions on GCS and Azure
+
+-   **GCS**: the service account the containers use needs
+    `storage.objects.list`, `storage.objects.get`, and
+    `storage.objects.create` on the bucket (eg the **Storage Object Viewer**
+    and **Storage Object Creator** roles)
+-   **Azure**: give the containers either the storage account's connection
+    string (`AZURE_STORAGE_CONNECTION_STRING`) or its name and key
+    (`AZURE_STORAGE_ACCOUNT`, `AZURE_STORAGE_KEY`), or use a managed identity
+    or service principal (`AZURE_CLIENT_ID` and related variables) with the
+    **Storage Blob Data Contributor** role on the container. These are the
+    same variables FiftyOne itself reads. Azure paths look like
+    `https://ACCOUNT.blob.core.windows.net/CONTAINER/PREFIX`
+
 ### Bucket CORS with Terraform (S3)
 
 ```hcl
@@ -332,6 +350,36 @@ resource "aws_s3_bucket_cors_configuration" "fiftyone_uploads" {
 A bucket has a single CORS configuration, so if one already exists, **add
 these to it** instead of creating a second one, which would replace the rules
 that let recordings render.
+
+## Staying working across FiftyOne upgrades
+
+Signed upload links are created with the official cloud SDKs (`boto3`,
+`google-cloud-storage`, `azure-storage-blob`), which ship with FiftyOne
+Enterprise, using the containers' own credentials. These are public, stable
+APIs, so FiftyOne upgrades don't affect uploads on deployments that give the
+containers bucket access.
+
+Only deployments that store bucket credentials in Settings > Cloud storage
+(and MinIO or aliased paths) fall back to FiftyOne's internal storage client,
+which a future FiftyOne release could change; the error message then says so.
+Azure without container credentials falls back to a single signed upload
+through FiftyOne's public API, limited to 5000 MiB per file.
+
+After upgrading FiftyOne, or after changing bucket permissions, run the
+upload check inside the plugin container. It uploads a small test file to
+each location the same way the panel does, checks the permission used for
+resuming, verifies the file, and deletes it:
+
+```shell
+docker compose exec teams-plugins \
+    python /opt/plugins/@v-nayjack/multimodal-io/tools/check_uploads.py \
+    s3://my-bucket/fiftyone gs://my-bucket/fiftyone
+```
+
+```
+PASS  s3://my-bucket/fiftyone  (s3_multipart upload, container credentials)
+PASS  gs://my-bucket/fiftyone  (gcs_resumable upload, container credentials)
+```
 
 ## Upload script
 

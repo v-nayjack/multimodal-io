@@ -8,27 +8,36 @@ to the bucket, and the server finalizes the upload:
 -   S3 and MinIO: multipart upload with a presigned URL per part (any size,
     resumable by part)
 -   GCS: resumable upload session (any size, resumable by byte offset)
--   Azure: a single signed ``PUT`` (up to 5000 MiB)
+-   Azure: block blob upload with a SAS URL (any size, resumable by block)
+
+Clients come from :mod:`clients`, which uses the official cloud SDKs.
 
 | Copyright 2026, Vinay Jakkali
 | Licensed under the Apache License, Version 2.0
 |
 """
 
+import base64
 import math
 
 import fiftyone.core.storage as fos
 
+try:
+    from . import clients
+except ImportError:
+    import clients
+
 
 S3_MULTIPART = "s3_multipart"
 GCS_RESUMABLE = "gcs_resumable"
+AZURE_BLOCKS = "azure_blocks"
 SINGLE_PUT = "single_put"
 
 MIB = 1024 * 1024
 MIN_PART_SIZE = 64 * MIB
 MAX_PARTS = 1000
 GCS_CHUNK_SIZE = 64 * MIB  # must be a multiple of 256 KiB
-AZURE_MAX_BYTES = 5000 * MIB
+SINGLE_PUT_MAX_BYTES = 5000 * MIB
 SIGNED_URL_HOURS = 12
 
 
@@ -54,7 +63,7 @@ def start_upload(path, size, origin=None):
         return _start_gcs(path, size, origin)
 
     if fs == fos.FileSystem.AZURE:
-        return _start_single(path, size)
+        return _start_azure(path, size)
 
     raise ValueError(
         "Browser uploads are not supported for '%s'. Use the upload script "
@@ -62,19 +71,35 @@ def start_upload(path, size, origin=None):
     )
 
 
-def resume_upload(path, size, upload_id):
-    """Returns what is needed to resume an S3 multipart upload.
+def resume_upload(path, size, upload_id=None, mode=S3_MULTIPART):
+    """Returns what is needed to continue an interrupted upload.
+
+    Also used to get fresh signed links when the old ones expire.
 
     Args:
         path: the destination object path
         size: the file size, in bytes
-        upload_id: the multipart upload ID from :func:`start_upload`
+        upload_id (None): the S3 multipart upload ID from
+            :func:`start_upload`
+        mode (S3_MULTIPART): the plan ``mode`` from :func:`start_upload`
 
     Returns:
         a plan dict like :func:`start_upload`, plus ``done``, a list of
         ``{"number", "etag"}`` dicts for parts already uploaded
     """
-    client, bucket, key = _s3(path)
+    if mode == AZURE_BLOCKS:
+        blob_client, url = _azure(path)
+        _, uncommitted = blob_client.get_block_list("uncommitted")
+        done = [
+            {"number": n, "etag": None}
+            for n in (block_number(b.id) for b in uncommitted)
+            if n is not None
+        ]
+        plan = _azure_plan(url, size)
+        plan["done"] = done
+        return plan
+
+    client, bucket, key = clients.s3(path)
     done = []
     kwargs = dict(Bucket=bucket, Key=key, UploadId=upload_id)
     while True:
@@ -93,7 +118,7 @@ def resume_upload(path, size, upload_id):
     return plan
 
 
-def complete_upload(path, mode, upload_id=None, parts=None):
+def complete_upload(path, mode, upload_id=None, parts=None, size=None):
     """Finalizes an upload once the browser has sent all bytes.
 
     Args:
@@ -101,12 +126,13 @@ def complete_upload(path, mode, upload_id=None, parts=None):
         mode: the plan ``mode`` from :func:`start_upload`
         upload_id (None): the S3 multipart upload ID
         parts (None): for S3, a list of ``{"number", "etag"}`` dicts
+        size (None): the file size, in bytes. Required for Azure
 
     Returns:
         the size of the uploaded object, in bytes
     """
     if mode == S3_MULTIPART:
-        client, bucket, key = _s3(path)
+        client, bucket, key = clients.s3(path)
         parts = sorted(parts or [], key=lambda p: int(p["number"]))
         if not parts:
             raise ValueError("No uploaded parts to complete")
@@ -123,6 +149,15 @@ def complete_upload(path, mode, upload_id=None, parts=None):
             },
         )
 
+    elif mode == AZURE_BLOCKS:
+        from azure.storage.blob import BlobBlock
+
+        blob_client, _ = _azure(path)
+        num_blocks = _num_parts(size)
+        blob_client.commit_block_list(
+            [BlobBlock(block_id=block_id(n)) for n in range(1, num_blocks + 1)]
+        )
+
     if not fos.isfile(path):
         raise ValueError("Upload did not finish: '%s' not found" % path)
 
@@ -132,20 +167,23 @@ def complete_upload(path, mode, upload_id=None, parts=None):
 def abort_upload(path, mode, upload_id=None):
     """Cancels an in-progress upload and discards any uploaded parts.
 
+    Azure discards uncommitted blocks on its own after 7 days, and GCS
+    discards unfinished resumable sessions after a week.
+
     Args:
         path: the destination object path
         mode: the plan ``mode`` from :func:`start_upload`
         upload_id (None): the S3 multipart upload ID
     """
     if mode == S3_MULTIPART and upload_id:
-        client, bucket, key = _s3(path)
+        client, bucket, key = clients.s3(path)
         client.abort_multipart_upload(
             Bucket=bucket, Key=key, UploadId=upload_id
         )
 
 
 def part_size_for(size):
-    """Returns the S3 part size for a file of ``size`` bytes.
+    """Returns the part (or block) size for a file of ``size`` bytes.
 
     Parts are at least 64 MiB, and large enough that no file needs more than
     :const:`MAX_PARTS` parts.
@@ -160,8 +198,35 @@ def part_size_for(size):
     return math.ceil(part_size / MIB) * MIB
 
 
+def block_id(number):
+    """Returns the Azure block ID for block ``number`` (starting at 1).
+
+    Azure requires every block ID in a blob to be base64 of the same length.
+    The browser computes the same IDs.
+
+    Args:
+        number: the block number
+
+    Returns:
+        the block ID
+    """
+    return base64.b64encode(("%06d" % number).encode()).decode()
+
+
+def block_number(block_id_str):
+    """Inverse of :func:`block_id`, or ``None`` for foreign block IDs."""
+    try:
+        return int(base64.b64decode(block_id_str).decode())
+    except Exception:
+        return None
+
+
+def _num_parts(size):
+    return max(1, math.ceil(int(size) / part_size_for(int(size))))
+
+
 def _start_s3(path, size):
-    client, bucket, key = _s3(path)
+    client, bucket, key = clients.s3(path)
     resp = client.create_multipart_upload(
         Bucket=bucket, Key=key, ContentType="application/octet-stream"
     )
@@ -170,9 +235,8 @@ def _start_s3(path, size):
 
 def _s3_plan(client, bucket, key, upload_id, size):
     part_size = part_size_for(size)
-    num_parts = max(1, math.ceil(size / part_size))
     parts = []
-    for number in range(1, num_parts + 1):
+    for number in range(1, _num_parts(size) + 1):
         url = client.generate_presigned_url(
             "upload_part",
             Params={
@@ -197,11 +261,13 @@ def _start_gcs(path, size, origin):
     if not origin:
         raise ValueError("The browser origin is required for GCS uploads")
 
-    storage_client = fos.get_client(path=path)
-    bucket, key = storage_client._parse_path(path)
-    blob = storage_client._client.bucket(bucket).blob(key)
-    session_url = blob.create_resumable_upload_session(
-        content_type="application/octet-stream", size=size, origin=origin
+    client, bucket, key = clients.gcs(path)
+    session_url = (
+        client.bucket(bucket)
+        .blob(key)
+        .create_resumable_upload_session(
+            content_type="application/octet-stream", size=size, origin=origin
+        )
     )
     return {
         "mode": GCS_RESUMABLE,
@@ -210,12 +276,18 @@ def _start_gcs(path, size, origin):
     }
 
 
-def _start_single(path, size):
-    if size > AZURE_MAX_BYTES:
+def _start_azure(path, size):
+    target = clients.azure_blob(path, SIGNED_URL_HOURS)
+    if target is not None:
+        return _azure_plan(target[1], size)
+
+    # No Azure credentials in the containers: fall back to one signed PUT
+    # through FiftyOne's public API, which has a size limit
+    if size > SINGLE_PUT_MAX_BYTES:
         raise ValueError(
-            "Files over %d MiB can't be uploaded to this storage from the "
-            "browser yet. Use the upload script instead"
-            % (AZURE_MAX_BYTES // MIB)
+            "Files over %d MiB need Azure credentials in the FiftyOne "
+            "containers for browser uploads (see the plugin README)"
+            % (SINGLE_PUT_MAX_BYTES // MIB)
         )
 
     url = fos.get_url(path, method="PUT", hours=SIGNED_URL_HOURS)
@@ -226,7 +298,20 @@ def _start_single(path, size):
     }
 
 
-def _s3(path):
-    storage_client = fos.get_client(path=path)
-    bucket, key = storage_client._parse_path(path)
-    return storage_client._client, bucket, key
+def _azure_plan(sas_url, size):
+    return {
+        "mode": AZURE_BLOCKS,
+        "url": sas_url,
+        "part_size": part_size_for(size),
+        "num_parts": _num_parts(size),
+    }
+
+
+def _azure(path):
+    target = clients.azure_blob(path, SIGNED_URL_HOURS)
+    if target is None:
+        raise clients.UploadClientError(
+            "No Azure credentials for '%s' in the FiftyOne containers" % path
+        )
+
+    return target

@@ -7,7 +7,7 @@
  *
  * - S3 / MinIO: multipart upload, several parts in parallel, resumable by part
  * - GCS: resumable upload session, resumable by byte offset
- * - Azure: a single signed PUT
+ * - Azure: block blob upload, several blocks in parallel, resumable by block
  *
  * Unfinished uploads are remembered in localStorage, so picking the same file
  * again (even after a page reload) resumes instead of starting over.
@@ -29,12 +29,18 @@ export type UploadResult = {
 };
 
 type Plan = {
-  mode: "s3_multipart" | "gcs_resumable" | "single_put" | "exists";
+  mode:
+    | "s3_multipart"
+    | "gcs_resumable"
+    | "azure_blocks"
+    | "single_put"
+    | "exists";
   path: string;
   upload_id?: string;
   part_size?: number;
   parts?: { number: number; url: string }[];
-  done?: { number: number; etag: string }[];
+  done?: { number: number; etag: string | null }[];
+  num_parts?: number;
   session_url?: string;
   chunk_size?: number;
   url?: string;
@@ -95,10 +101,14 @@ export async function uploadFile(
   let plan: Plan | null = null;
   let resumedGcs = false;
 
-  if (saved?.mode === "s3_multipart" && saved.upload_id) {
+  if (
+    (saved?.mode === "s3_multipart" && saved.upload_id) ||
+    saved?.mode === "azure_blocks"
+  ) {
     try {
       plan = await runOperator<Plan>("resume_large_upload", {
         ...base,
+        mode: saved.mode,
         upload_id: saved.upload_id,
       });
     } catch {
@@ -135,7 +145,18 @@ export async function uploadFile(
     if (plan.mode === "s3_multipart") {
       const uploadId = plan.upload_id;
       parts = await uploadS3(file, plan, opts, () =>
-        runOperator<Plan>("resume_large_upload", { ...base, upload_id: uploadId })
+        runOperator<Plan>("resume_large_upload", {
+          ...base,
+          mode: "s3_multipart",
+          upload_id: uploadId,
+        })
+      );
+    } else if (plan.mode === "azure_blocks") {
+      await uploadAzure(file, plan, opts, () =>
+        runOperator<Plan>("resume_large_upload", {
+          ...base,
+          mode: "azure_blocks",
+        })
       );
     } else if (plan.mode === "gcs_resumable") {
       await uploadGcs(file, plan, resumedGcs, opts);
@@ -219,8 +240,9 @@ async function uploadS3(
     }
     return refreshing;
   };
+  // S3 always reports an ETag for finished parts
   const done = new Map<number, string>(
-    (plan.done ?? []).map((p) => [p.number, p.etag])
+    (plan.done ?? []).map((p) => [p.number, p.etag ?? ""])
   );
   const sent = new Map<number, number>();
   const partBytes = (n: number) =>
@@ -286,6 +308,81 @@ async function uploadS3(
   );
 
   return Array.from(done, ([number, etag]) => ({ number, etag }));
+}
+
+async function uploadAzure(
+  file: File,
+  plan: Plan,
+  opts: UploadOptions,
+  refreshPlan: () => Promise<Plan>
+): Promise<void> {
+  const blockSize = plan.part_size!;
+  const numBlocks = plan.num_parts!;
+  // One SAS URL covers every block; refresh it if Azure refuses a block
+  let baseUrl = plan.url!;
+  let refreshing: Promise<void> | null = null;
+  const refreshUrl = () => {
+    if (!refreshing) {
+      refreshing = refreshPlan()
+        .then((fresh) => {
+          if (fresh.url) baseUrl = fresh.url;
+        })
+        .finally(() => {
+          refreshing = null;
+        });
+    }
+    return refreshing;
+  };
+
+  const done = new Set((plan.done ?? []).map((p) => p.number));
+  const sent = new Map<number, number>();
+  const blockBytes = (n: number) =>
+    Math.min(blockSize, file.size - (n - 1) * blockSize);
+  done.forEach((n) => sent.set(n, blockBytes(n)));
+  const report = () => {
+    let total = 0;
+    sent.forEach((v) => (total += v));
+    opts.onProgress(total);
+  };
+  report();
+
+  const queue: number[] = [];
+  for (let n = 1; n <= numBlocks; n++) {
+    if (!done.has(n)) queue.push(n);
+  }
+
+  const worker = async () => {
+    for (let n = queue.shift(); n !== undefined; n = queue.shift()) {
+      const number = n;
+      const start = (number - 1) * blockSize;
+      const blob = file.slice(start, start + blockBytes(number));
+      const blockUrl = () =>
+        `${baseUrl}&comp=block&blockid=${encodeURIComponent(azureBlockId(number))}`;
+      await withRetries(async () => {
+        const onProgress = (loaded: number) => {
+          sent.set(number, loaded);
+          report();
+        };
+        let x = await put(blockUrl(), blob, undefined, onProgress, opts.signal);
+        if (x.status === 403) {
+          await refreshUrl();
+          x = await put(blockUrl(), blob, undefined, onProgress, opts.signal);
+        }
+        assertOk(x, `Block ${number}`);
+      }, opts.signal);
+      sent.set(number, blob.size);
+      report();
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(PART_CONCURRENCY, queue.length) }, worker)
+  );
+}
+
+/** Same block IDs as the server: base64 of the zero-padded block number. */
+function azureBlockId(number: number): string {
+  return btoa(String(number).padStart(6, "0"));
 }
 
 async function uploadGcs(

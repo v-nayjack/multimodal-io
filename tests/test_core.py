@@ -229,3 +229,25 @@ def test_part_size_for():
     part = uploads.part_size_for(size)
     assert part % mib == 0
     assert -(-size // part) <= uploads.MAX_PARTS
+
+
+def test_azure_block_ids():
+    import uploads
+
+    ids = [uploads.block_id(n) for n in (1, 42, 999999)]
+    assert len({len(i) for i in ids}) == 1  # Azure needs equal-length IDs
+    assert [uploads.block_number(i) for i in ids] == [1, 42, 999999]
+    assert uploads.block_number("not-ours") is None
+
+
+def test_clients_path_parsing():
+    import clients
+
+    assert clients._split("bucket/a/b.mcap") == ("bucket", "a/b.mcap")
+    assert clients._split("bucket") == ("bucket", "")
+
+    m = clients._AZURE_URL.match(
+        "https://acct1.blob.core.windows.net/container/users/jane/a.mcap"
+    )
+    assert m.groups() == ("acct1", "container", "users/jane/a.mcap")
+    assert clients._AZURE_URL.match("az://container/a.mcap") is None

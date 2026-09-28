@@ -497,6 +497,16 @@ def _is_hidden(relpath):
 
 def _file_size(path):
     try:
+        if fos.get_file_system(path) == fos.FileSystem.AZURE:
+            # FiftyOne's get_file_size() doesn't work on Azure paths, but
+            # listing the folder with metadata does
+            folder, name = path.rsplit("/", 1)
+            for entry in fos.list_files(folder, return_metadata=True):
+                if entry["filepath"] == name:
+                    return entry.get("size") or 0
+
+            return 0
+
         return fos.get_file_size(path) or 0
     except Exception:
         return 0

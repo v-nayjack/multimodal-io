@@ -155,11 +155,35 @@ def complete_upload(path, mode, upload_id=None, parts=None, size=None):
         blob_client, _ = _azure(path)
         num_blocks = _num_parts(size)
         blob_client.commit_block_list(
-            [BlobBlock(block_id=block_id(n)) for n in range(1, num_blocks + 1)]
+            [
+                BlobBlock(block_id=block_name(n))
+                for n in range(1, num_blocks + 1)
+            ]
         )
 
     if not fos.isfile(path):
         raise ValueError("Upload did not finish: '%s' not found" % path)
+
+    return object_size(path)
+
+
+def object_size(path):
+    """Returns the size of an uploaded object, in bytes.
+
+    On Azure, ``fiftyone.core.storage.get_file_size()`` fails (FiftyOne asks
+    its Azure client for a ``HEAD`` signed URL, which it doesn't support), so
+    Azure sizes come from the blob's properties via the Azure SDK.
+
+    Args:
+        path: the object path
+
+    Returns:
+        the size in bytes
+    """
+    if fos.get_file_system(path) == fos.FileSystem.AZURE:
+        target = clients.azure_blob(path, SIGNED_URL_HOURS)
+        if target is not None:
+            return target[0].get_blob_properties().size
 
     return fos.get_file_size(path)
 
@@ -198,11 +222,25 @@ def part_size_for(size):
     return math.ceil(part_size / MIB) * MIB
 
 
-def block_id(number):
-    """Returns the Azure block ID for block ``number`` (starting at 1).
+def block_name(number):
+    """Returns the Azure block name for block ``number`` (starting at 1).
 
-    Azure requires every block ID in a blob to be base64 of the same length.
-    The browser computes the same IDs.
+    This is the plain form the Azure SDK expects; the SDK base64-encodes it
+    when talking to Azure. All names in a blob have the same length, as Azure
+    requires.
+
+    Args:
+        number: the block number
+
+    Returns:
+        the block name
+    """
+    return "%06d" % number
+
+
+def block_id(number):
+    """Returns the base64 block ID for block ``number``, as sent to Azure's
+    REST API. The browser computes the same IDs.
 
     Args:
         number: the block number
@@ -210,15 +248,21 @@ def block_id(number):
     Returns:
         the block ID
     """
-    return base64.b64encode(("%06d" % number).encode()).decode()
+    return base64.b64encode(block_name(number).encode()).decode()
 
 
-def block_number(block_id_str):
-    """Inverse of :func:`block_id`, or ``None`` for foreign block IDs."""
+def block_number(name):
+    """Inverse of :func:`block_name` (or :func:`block_id`), or ``None`` for
+    blocks this plugin didn't create."""
+    if name.isdigit():
+        return int(name)
+
     try:
-        return int(base64.b64decode(block_id_str).decode())
+        decoded = base64.b64decode(name, validate=True).decode()
     except Exception:
         return None
+
+    return int(decoded) if decoded.isdigit() else None
 
 
 def _num_parts(size):

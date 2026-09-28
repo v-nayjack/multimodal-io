@@ -234,9 +234,18 @@ def test_part_size_for():
 def test_azure_block_ids():
     import uploads
 
-    ids = [uploads.block_id(n) for n in (1, 42, 999999)]
+    nums = (1, 42, 999999)
+    ids = [uploads.block_id(n) for n in nums]
     assert len({len(i) for i in ids}) == 1  # Azure needs equal-length IDs
+
+    # The SDK takes and returns plain names; REST uses base64 IDs
+    assert [uploads.block_number(uploads.block_name(n)) for n in nums] == [
+        1,
+        42,
+        999999,
+    ]
     assert [uploads.block_number(i) for i in ids] == [1, 42, 999999]
+    assert uploads.block_id(1) == "MDAwMDAx"  # same as the browser's btoa
     assert uploads.block_number("not-ours") is None
 
 

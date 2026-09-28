@@ -296,7 +296,7 @@ class StartLargeUpload(foo.Operator):
         path, size = _upload_target(ctx)
 
         # A file that is already fully uploaded only needs importing
-        if fos.isfile(path) and fos.get_file_size(path) == size:
+        if fos.isfile(path) and uploads.object_size(path) == size:
             return {"mode": "exists", "path": path}
 
         plan = uploads.start_upload(
@@ -340,7 +340,7 @@ class CompleteLargeUpload(foo.Operator):
                 size=size,
             )
 
-        actual = fos.get_file_size(path)
+        actual = uploads.object_size(path)
         if actual != size:
             raise ValueError(
                 "Uploaded file is %d bytes but %d were expected"

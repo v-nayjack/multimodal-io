@@ -148,7 +148,11 @@ GCS example (`gcloud storage buckets update gs://BUCKET --cors-file=cors.json`):
 
 Azure: in the storage account, **Settings > Resource sharing (CORS) > Blob
 service**, add allowed origin `https://your-deployment.fiftyone.ai`, methods
-`GET, HEAD, PUT, OPTIONS`, allowed and exposed headers `*`, max age `3600`.
+`GET, HEAD, PUT, OPTIONS`, allowed headers `*`, max age `3600`, and **list the
+exposed headers explicitly**:
+`Content-Range,Content-Length,Accept-Ranges,Content-Type,ETag`. Don't use `*`
+for exposed headers: Azure expands it to a list without `Content-Range`, so
+uploads work but recordings fail to open.
 
 ## Operators
 

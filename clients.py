@@ -185,6 +185,34 @@ def _public_azure(account):
 
     account_url = "https://%s.blob.core.windows.net" % account
 
+    # Same credentials file FiftyOne's own Azure client reads
+    creds = _azure_credentials_file()
+    if creds.get("conn_str"):
+        service = BlobServiceClient.from_connection_string(creds["conn_str"])
+        if service.account_name == account:
+            return service, service.credential.account_key
+
+    if creds.get("account_key") and creds.get("account_name") == account:
+        service = BlobServiceClient(
+            account_url,
+            credential={
+                "account_name": account,
+                "account_key": creds["account_key"],
+            },
+        )
+        return service, creds["account_key"]
+
+    if creds.get("client_id") and creds.get("client_secret"):
+        try:
+            from azure.identity import ClientSecretCredential
+        except ImportError:
+            return None, None
+
+        credential = ClientSecretCredential(
+            creds["tenant_id"], creds["client_id"], creds["client_secret"]
+        )
+        return BlobServiceClient(account_url, credential), None
+
     conn_str = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
     if conn_str:
         service = BlobServiceClient.from_connection_string(conn_str)
@@ -210,6 +238,27 @@ def _public_azure(account):
         return BlobServiceClient(account_url, DefaultAzureCredential()), None
 
     return None, None
+
+
+def _azure_credentials_file():
+    """Reads ``AZURE_CREDENTIALS_FILE``, if set, in FiftyOne's ``.ini``
+    format (``[default]`` section with ``conn_str``, or ``account_name`` and
+    ``account_key``, or ``client_id``, ``client_secret``, and
+    ``tenant_id``)."""
+    path = os.environ.get("AZURE_CREDENTIALS_FILE")
+    if not path or not os.path.isfile(path):
+        return {}
+
+    import configparser
+
+    config = configparser.ConfigParser()
+    config.read(path)
+    profile = os.environ.get("AZURE_PROFILE") or "default"
+    for section in (profile, "profile " + profile):
+        if section in config:
+            return dict(config[section])
+
+    return {}
 
 
 def _fallback(path):

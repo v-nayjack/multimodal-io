@@ -21,6 +21,22 @@ and a file that was already uploaded or imported is never added twice.
 
 Requires FiftyOne Enterprise `>=2.25.0` with multimodal support enabled.
 
+## Demo
+
+**Import MCAP recordings from a bucket**
+
+https://github.com/user-attachments/assets/3ae2098a-ad3e-4ff6-8901-1674f4589622
+
+**Import a LeRobot dataset**
+
+https://github.com/user-attachments/assets/81bf2ccf-93cc-4e40-899e-842dc9279603
+
+**Upload MCAP files from your laptop, to S3, GCS, or Azure**
+
+https://github.com/user-attachments/assets/7b6d5ee5-c715-46eb-a2b5-294f07f4ad82
+
+The sample data is credited in [Demo data](#demo-data).
+
 ## Installation
 
 An admin installs the plugin from the App (Settings > Plugins), or with the
@@ -453,6 +469,25 @@ Tests:
 ```shell
 pytest tests
 ```
+
+## Demo data
+
+The demo recordings use public sample datasets. They are not included in
+this repo and are shown for demonstration only.
+
+-   **Kitchen MCAP recordings**:
+    [MCAP-Housing](https://huggingface.co/datasets/cortexdatalabs/MCAP-Housing)
+    by [Cortex Data Labs](https://huggingface.co/cortexdatalabs), licensed
+    [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/). The
+    upload clips are shortened excerpts of these recordings. Non-commercial
+    use only; contact Cortex Data Labs for commercial licensing
+-   **LeRobot dataset**:
+    [svla_so101_pickplace](https://huggingface.co/datasets/lerobot/svla_so101_pickplace)
+    by [Hugging Face LeRobot](https://huggingface.co/lerobot), licensed
+    [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0)
+
+The plugin itself is licensed under Apache 2.0 and does not include or
+redistribute any of this data.
 
 ## Contributing
 

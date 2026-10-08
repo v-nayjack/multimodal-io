@@ -25,6 +25,7 @@ export type UploadStage = "starting" | "uploading" | "importing";
 export type UploadResult = {
   dataset: string;
   num_added: number;
+  num_refreshed?: number;
   path: string;
 };
 
@@ -53,6 +54,8 @@ export type UploadOptions = {
   root: string;
   datasetName: string;
   tags?: string[];
+  /** Replace a file that already exists instead of skipping it */
+  overwrite?: boolean;
   onProgress: (sentBytes: number) => void;
   onStage: (stage: UploadStage) => void;
   signal: AbortSignal;
@@ -93,6 +96,7 @@ export async function uploadFile(
     dataset_name: opts.datasetName,
     root: opts.root,
     origin: window.location.origin,
+    overwrite: !!opts.overwrite,
   };
   const key = storeKey(file, opts.root, opts.datasetName);
 

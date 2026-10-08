@@ -24,6 +24,7 @@ export type Item = {
   startedAt?: number;
   error?: string;
   added?: number;
+  refreshed?: number;
   dest?: string;
 };
 
@@ -33,6 +34,7 @@ export type State = {
   datasetName: string | null;
   root: string;
   tags: string;
+  overwrite: boolean;
   finished: string | null;
   refresh: number;
   followedDataset: string | null;
@@ -46,6 +48,8 @@ let state: State = {
   datasetName: null,
   root: loadRootPref(),
   tags: "",
+  // Off on every page load, so files are only replaced on purpose
+  overwrite: false,
   finished: null,
   refresh: 0,
   followedDataset: null,
@@ -85,23 +89,35 @@ export function setField(
   setState({ [field]: value } as Partial<State>);
 }
 
-/** Adds .mcap files to the queue, ignoring ones already listed. */
+export function setOverwrite(overwrite: boolean) {
+  setState({ overwrite });
+}
+
+/**
+ * Adds .mcap files to the queue. A file that is already listed is ignored,
+ * unless it finished uploading; then it is queued again so it can be
+ * re-uploaded (for example with Overwrite turned on).
+ */
 export function addFiles(files: FileList | File[] | null) {
   if (!files) return;
   const picked = Array.from(files).filter((f) =>
     f.name.toLowerCase().endsWith(".mcap")
   );
   setState((s) => {
-    const known = new Set(s.items.map((it) => it.id));
-    const next = picked
-      .map((file) => ({
-        id: `${file.name}:${file.size}:${file.lastModified}`,
-        file,
-        status: "queued" as Status,
-        sent: 0,
-      }))
-      .filter((it) => !known.has(it.id));
-    return { items: [...s.items, ...next], finished: null };
+    const fresh = picked.map((file) => ({
+      id: `${file.name}:${file.size}:${file.lastModified}`,
+      file,
+      status: "queued" as Status,
+      sent: 0,
+    }));
+    // Drop finished rows for files picked again, so they get a fresh row
+    const pickedIds = new Set(fresh.map((it) => it.id));
+    const kept = s.items.filter(
+      (it) => !(it.status === "done" && pickedIds.has(it.id))
+    );
+    const known = new Set(kept.map((it) => it.id));
+    const next = fresh.filter((it) => !known.has(it.id));
+    return { items: [...kept, ...next], finished: null };
   });
 }
 
@@ -206,6 +222,7 @@ export async function startBatch(
         root,
         datasetName,
         tags: tags.length ? tags : undefined,
+        overwrite: state.overwrite,
         signal: controller.signal,
         onStage: (stage) => updateItem(current.id, { status: stage }),
         onProgress: (sent) => updateItem(current.id, { sent }),
@@ -215,6 +232,7 @@ export async function startBatch(
         status: "done",
         sent: current.file.size,
         added: result.num_added,
+        refreshed: result.num_refreshed,
       });
       setState((s) => ({ refresh: s.refresh + 1 }));
       // Show each new sample right away when uploading into the open dataset

@@ -295,8 +295,14 @@ class StartLargeUpload(foo.Operator):
     def execute(self, ctx):
         path, size = _upload_target(ctx)
 
-        # A file that is already fully uploaded only needs importing
-        if fos.isfile(path) and uploads.object_size(path) == size:
+        # A file that is already fully uploaded only needs importing, unless
+        # the user asked to replace it
+        overwrite = bool(ctx.params.get("overwrite", False))
+        if (
+            not overwrite
+            and fos.isfile(path)
+            and uploads.object_size(path) == size
+        ):
             return {"mode": "exists", "path": path}
 
         plan = uploads.start_upload(
@@ -362,14 +368,30 @@ class CompleteLargeUpload(foo.Operator):
             source=os.path.basename(path),
         )
 
+        tags = ctx.params.get("tags", None) or None
+        username = _get_username(ctx)
         ids = core.import_scan(
             dataset,
             core.scan(path),
-            tags=ctx.params.get("tags", None) or None,
-            uploaded_by=_get_username(ctx),
+            tags=tags,
+            uploaded_by=username,
             compute_metadata=True,
         )
-        return {"dataset": dataset.name, "num_added": len(ids), "path": path}
+
+        # A replaced file keeps its filepath, so its sample was skipped
+        # above; refresh it to match the new file
+        refreshed = []
+        if ctx.params.get("overwrite", False) and not ids:
+            refreshed = core.refresh_existing(
+                dataset, [path], tags=tags, uploaded_by=username
+            )
+
+        return {
+            "dataset": dataset.name,
+            "num_added": len(ids),
+            "num_refreshed": len(refreshed),
+            "path": path,
+        }
 
 
 class AbortLargeUpload(foo.Operator):

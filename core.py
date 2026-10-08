@@ -18,6 +18,7 @@ import re
 
 import fiftyone as fo
 import fiftyone.core.storage as fos
+from fiftyone import ViewField as F
 
 
 MCAP = "mcap"
@@ -230,6 +231,42 @@ def import_scan(
         set_uploaded_by(dataset, ids, uploaded_by)
 
     _record_import(dataset, result)
+    return ids
+
+
+def refresh_existing(dataset, files, tags=None, uploaded_by=None):
+    """Refreshes the samples for MCAP files that were replaced in place.
+
+    When a file is re-uploaded over an existing object, its sample keeps the
+    same filepath, so :func:`import_scan` skips it. This recomputes the
+    sample's metadata from the new file (size, streams, and fingerprint),
+    adds any ``tags``, and records ``uploaded_by`` as the latest uploader.
+
+    Args:
+        dataset: a :class:`fiftyone.core.dataset.Dataset`
+        files: the replaced file paths
+        tags (None): optional tag(s) to add to each refreshed sample
+        uploaded_by (None): the username to record on each refreshed sample
+
+    Returns:
+        the list of refreshed sample IDs
+    """
+    if not files or not len(dataset):
+        return []
+
+    view = dataset.match(F("filepath").is_in(list(files)))
+    ids = view.values("id")
+    if not ids:
+        return []
+
+    view.compute_metadata(overwrite=True)
+
+    if tags:
+        view.tag_samples(list(tags))
+
+    if uploaded_by:
+        set_uploaded_by(dataset, ids, uploaded_by)
+
     return ids
 
 

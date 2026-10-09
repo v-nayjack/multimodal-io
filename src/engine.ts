@@ -26,6 +26,11 @@ export type UploadResult = {
   dataset: string;
   num_added: number;
   num_refreshed?: number;
+  /** True when the file was a YAML sidecar, which is uploaded but not imported */
+  sidecar?: boolean;
+  /** Fields set from YAML sidecars and key=value inputs */
+  fields?: string[];
+  warnings?: string[];
   path: string;
 };
 
@@ -56,6 +61,8 @@ export type UploadOptions = {
   tags?: string[];
   /** Replace a file that already exists instead of skipping it */
   overwrite?: boolean;
+  /** key=value lines to set as fields on each sample */
+  fields?: string[];
   onProgress: (sentBytes: number) => void;
   onStage: (stage: UploadStage) => void;
   signal: AbortSignal;
@@ -97,6 +104,7 @@ export async function uploadFile(
     root: opts.root,
     origin: window.location.origin,
     overwrite: !!opts.overwrite,
+    fields: opts.fields ?? [],
   };
   const key = storeKey(file, opts.root, opts.datasetName);
 

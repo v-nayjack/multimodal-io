@@ -260,3 +260,154 @@ def test_clients_path_parsing():
     )
     assert m.groups() == ("acct1", "container", "users/jane/a.mcap")
     assert clients._AZURE_URL.match("az://container/a.mcap") is None
+
+
+def _write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+
+
+ROSBAG2_METADATA = """\
+rosbag2_bagfile_information:
+  version: 9
+  storage_identifier: mcap
+  duration:
+    nanoseconds: 12500000000
+  starting_time:
+    nanoseconds_since_epoch: 1760000000000000000
+  message_count: 4210
+  topics_with_message_count:
+    - topic_metadata:
+        name: /camera/image/compressed
+        type: sensor_msgs/msg/CompressedImage
+      message_count: 375
+  relative_file_paths:
+    - run1_0.mcap
+  custom_data:
+    robot: ur5e
+    episode: "12"
+    validated: "true"
+    operator_id: "007"
+  ros_distro: humble
+"""
+
+
+def test_match_sidecars(tmp_path):
+    root = str(tmp_path)
+    _touch(os.path.join(root, "a.mcap"))
+    _touch(os.path.join(root, "b.mcap"))
+    _write(os.path.join(root, "metadata.yaml"), "x: 1\n")
+    _write(os.path.join(root, "a.yaml"), "x: 2\n")
+    _write(os.path.join(root, "b.mcap.yml"), "x: 3\n")
+    _write(os.path.join(root, "other", "metadata.yaml"), "x: 4\n")
+
+    result = core.scan(root)
+    names = {
+        os.path.basename(f): [os.path.relpath(p, root) for p in paths]
+        for f, paths in result.sidecars.items()
+    }
+
+    # Folder-wide files first, then the file's own sidecar
+    assert names == {
+        "a.mcap": ["metadata.yaml", "a.yaml"],
+        "b.mcap": ["metadata.yaml", "b.mcap.yml"],
+    }
+    assert result.describe() == "MCAP: 2 files, 20 B, 2 with YAML sidecars"
+
+    # A single file picks up the sidecars next to it, and a pattern that
+    # selects MCAP files still finds them
+    single = core.scan(os.path.join(root, "b.mcap"))
+    assert len(single.sidecars[os.path.join(root, "b.mcap")]) == 2
+    assert len(core.scan(root, pattern="a.mcap").sidecars) == 1
+
+
+def test_read_sidecar(tmp_path):
+    path = str(tmp_path / "annotations.yaml")
+    _write(
+        path,
+        "robot:\n  name: ur5e\n  arm count: 2\n"
+        "campaign: summer-24\nverdict: true\nscore: 0.9\n"
+        "recorded: 2026-10-09\nlabels: [a, b]\nempty:\n",
+    )
+
+    fields, warnings = core.read_sidecar(path)
+
+    assert fields["robot_name"] == "ur5e"
+    assert fields["robot_arm_count"] == 2
+    assert fields["campaign"] == "summer-24"
+    assert fields["verdict"] is True
+    assert fields["score"] == 0.9
+    assert str(fields["recorded"]) == "2026-10-09"
+    assert "labels" not in fields and "empty" not in fields
+    assert len(warnings) == 1 and "labels" in warnings[0]
+
+
+def test_read_rosbag2_metadata(tmp_path):
+    path = str(tmp_path / "metadata.yaml")
+    _write(path, ROSBAG2_METADATA)
+
+    fields, warnings = core.read_sidecar(path)
+
+    assert fields["robot"] == "ur5e"
+    assert fields["episode"] == 12
+    assert fields["validated"] is True
+    assert fields["operator_id"] == "007"
+    assert fields["bag_duration_s"] == 12.5
+    assert fields["bag_message_count"] == 4210
+    assert fields["bag_ros_distro"] == "humble"
+    assert fields["bag_start_time"].year == 2025
+    assert not any(k.startswith("rosbag2") for k in fields)
+    assert warnings == []
+
+
+def test_read_sidecar_bad_files(tmp_path):
+    bad = str(tmp_path / "bad.yaml")
+    _write(bad, "a: [unclosed\n")
+    fields, warnings = core.read_sidecar(bad)
+    assert fields == {} and "bad.yaml" in warnings[0]
+
+    listing = str(tmp_path / "list.yaml")
+    _write(listing, "- a\n- b\n")
+    assert core.read_sidecar(listing)[0] == {}
+
+    assert core.read_sidecar(str(tmp_path / "missing.yaml"))[0] == {}
+
+
+def test_field_name():
+    assert core.field_name("robot") == "robot"
+    assert core.field_name("Robot Type") == "Robot_Type"
+    assert core.field_name("a.b/c-d") == "a_b_c_d"
+    assert core.field_name("_hidden") == "hidden"
+    assert core.field_name("2nd_try") == "f_2nd_try"
+    assert core.field_name("$$") is None
+
+
+def test_parse_fields():
+    assert core.parse_fields(["robot=ur5", " count = 3 ", "", "ok=true"]) == {
+        "robot": "ur5",
+        "count": 3,
+        "ok": True,
+    }
+    assert core.parse_fields("ratio=0.5\nrun_id=007\nnote=a=b") == {
+        "ratio": 0.5,
+        "run_id": "007",
+        "note": "a=b",
+    }
+    assert core.parse_fields(None) == {}
+
+    for bad in (["robot"], ["=x"], ["tags=a"], ["uploaded_by=me"]):
+        with pytest.raises(ValueError):
+            core.parse_fields(bad)
+
+
+def test_upload_dir_pattern_keeps_sidecars(tmp_path):
+    src = tmp_path / "src"
+    dst = str(tmp_path / "dst")
+    _touch(str(src / "keep.mcap"), 10)
+    _touch(str(src / "skip.mcap"), 30)
+    _write(str(src / "metadata.yaml"), "x: 1\n")
+
+    num_up, _, _ = core.upload_dir(str(src), dst, pattern="keep*.mcap")
+    assert num_up == 2
+    assert os.path.isfile(os.path.join(dst, "metadata.yaml"))

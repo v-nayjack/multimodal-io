@@ -25,6 +25,9 @@ export type Item = {
   error?: string;
   added?: number;
   refreshed?: number;
+  sidecar?: boolean;
+  fields?: string[];
+  warnings?: string[];
   dest?: string;
 };
 
@@ -34,6 +37,7 @@ export type State = {
   datasetName: string | null;
   root: string;
   tags: string;
+  fields: string;
   overwrite: boolean;
   finished: string | null;
   refresh: number;
@@ -48,6 +52,7 @@ let state: State = {
   datasetName: null,
   root: loadRootPref(),
   tags: "",
+  fields: "",
   // Off on every page load, so files are only replaced on purpose
   overwrite: false,
   finished: null,
@@ -80,7 +85,7 @@ function updateItem(id: string, patch: Partial<Item>) {
 }
 
 export function setField(
-  field: "datasetName" | "root" | "tags",
+  field: "datasetName" | "root" | "tags" | "fields",
   value: string
 ) {
   if (field === "root") {
@@ -93,15 +98,20 @@ export function setOverwrite(overwrite: boolean) {
   setState({ overwrite });
 }
 
+/** Whether a file is a YAML sidecar rather than an MCAP file. */
+export function isSidecar(name: string): boolean {
+  return /\.ya?ml$/i.test(name);
+}
+
 /**
- * Adds .mcap files to the queue. A file that is already listed is ignored,
- * unless it finished uploading; then it is queued again so it can be
- * re-uploaded (for example with Overwrite turned on).
+ * Adds .mcap files and .yaml sidecars to the queue. A file that is already
+ * listed is ignored, unless it finished uploading; then it is queued again
+ * so it can be re-uploaded (for example with Overwrite turned on).
  */
 export function addFiles(files: FileList | File[] | null) {
   if (!files) return;
-  const picked = Array.from(files).filter((f) =>
-    f.name.toLowerCase().endsWith(".mcap")
+  const picked = Array.from(files).filter(
+    (f) => f.name.toLowerCase().endsWith(".mcap") || isSidecar(f.name)
   );
   setState((s) => {
     const fresh = picked.map((file) => ({
@@ -116,7 +126,26 @@ export function addFiles(files: FileList | File[] | null) {
       (it) => !(it.status === "done" && pickedIds.has(it.id))
     );
     const known = new Set(kept.map((it) => it.id));
-    const next = fresh.filter((it) => !known.has(it.id));
+    // Uploads go into one folder, so two different files with the same name
+    // would replace each other
+    const names = new Set(
+      kept.filter((it) => it.status !== "done").map((it) => it.file.name)
+    );
+    const next = fresh
+      .filter((it) => !known.has(it.id))
+      .map((it) => {
+        if (names.has(it.file.name)) {
+          return {
+            ...it,
+            status: "error" as Status,
+            error:
+              "Another file with this name is already in the list. Upload " +
+              "one recording at a time, or use the CLI for folders",
+          };
+        }
+        names.add(it.file.name);
+        return it;
+      });
     return { items: [...kept, ...next], finished: null };
   });
 }
@@ -187,13 +216,17 @@ export async function startBatch(
     .split(",")
     .map((t) => t.trim())
     .filter(Boolean);
+  const fields = state.fields
+    .split("\n")
+    .map((f) => f.trim())
+    .filter(Boolean);
 
   setState((s) => ({
     running: true,
     finished: null,
     datasetName,
     items: s.items.map((it) =>
-      it.status === "error" || it.status === "cancelled"
+      (it.status === "error" || it.status === "cancelled") && !isDuplicate(it)
         ? { ...it, status: "queued" as Status, sent: 0, error: undefined }
         : it
     ),
@@ -223,6 +256,7 @@ export async function startBatch(
         datasetName,
         tags: tags.length ? tags : undefined,
         overwrite: state.overwrite,
+        fields,
         signal: controller.signal,
         onStage: (stage) => updateItem(current.id, { status: stage }),
         onProgress: (sent) => updateItem(current.id, { sent }),
@@ -233,6 +267,9 @@ export async function startBatch(
         sent: current.file.size,
         added: result.num_added,
         refreshed: result.num_refreshed,
+        sidecar: result.sidecar,
+        fields: result.fields,
+        warnings: result.warnings,
       });
       setState((s) => ({ refresh: s.refresh + 1 }));
       // Show each new sample right away when uploading into the open dataset
@@ -269,8 +306,20 @@ export function isActive(status: Status): boolean {
   );
 }
 
+/** Sidecars go first, so they are in the bucket when their MCAP imports. */
 function nextQueued(): Item | undefined {
-  return state.items.find((it) => it.status === "queued");
+  const queued = state.items.filter((it) => it.status === "queued");
+  return queued.find((it) => isSidecar(it.file.name)) ?? queued[0];
+}
+
+function isDuplicate(item: Item): boolean {
+  return state.items.some(
+    (it) =>
+      it !== item &&
+      it.file.name === item.file.name &&
+      it.status !== "done" &&
+      state.items.indexOf(it) < state.items.indexOf(item)
+  );
 }
 
 function warnOnUnload(e: BeforeUnloadEvent) {

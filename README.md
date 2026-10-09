@@ -18,7 +18,9 @@ formats:
 All paths share the same format detection and folder rules
 ([`core.py`](core.py)), so data lands in the same place however it arrives,
 and a file that was already uploaded or imported is never added twice
-(unless you choose to overwrite it).
+(unless you choose to overwrite it). Metadata in
+[YAML sidecar files](#sample-fields-from-yaml-sidecars) next to each MCAP
+file becomes sample fields, whichever way the files arrive.
 
 Requires FiftyOne Enterprise `>=2.25.0` with multimodal support enabled.
 
@@ -196,6 +198,10 @@ A dataset holds either MCAP samples or LeRobot episodes, never both.
 Re-running an import is safe: MCAP files already in the dataset are skipped,
 and a LeRobot folder that was already imported is not added again.
 
+YAML sidecar files in the folder are read automatically and their values
+become fields on the new samples; the output lists the fields that were set.
+See [Sample fields from YAML sidecars](#sample-fields-from-yaml-sidecars).
+
 ### Upload MCAP files panel
 
 Inside any dataset, click the **Upload MCAP files** button above the sample
@@ -215,8 +221,11 @@ Then:
 2.  **Dataset**: the dataset to upload into. The panel shows whether it will
     be created or added to, and the exact folder files go to:
     `<location>/users/<you>/<dataset>/`
-3.  Drag in `.mcap` files or click **Choose files**. There is no size limit
-4.  Click **Start upload**. Files upload one at a time; each shows its
+3.  **Fields** (optional): `key=value` lines, eg `robot=ur5`, set on every
+    file in this upload
+4.  Drag in `.mcap` files, plus any `.yaml` sidecars, or click **Choose
+    files**. There is no size limit
+5.  Click **Start upload**. Files upload one at a time; each shows its
     progress, speed, and time left, then is imported as soon as it finishes
 
 How it works: the plugin creates short-lived signed upload links for your
@@ -244,11 +253,67 @@ role-based server credentials), the panel fetches fresh links and continues.
     metadata (size, streams) is recomputed from the new file, any tags are
     added, and `uploaded_by` becomes you. The row then shows "replaced".
     It's off by default each time the page loads
+-   **Sidecars**: `.yaml` files upload first, so they're in place when their
+    MCAP file is imported. Each imported row lists the fields it got, and
+    any value that couldn't be read shows as a warning. Sidecars are always
+    replaced (they're small); with Overwrite on, uploading just a changed
+    sidecar also updates the samples it applies to, without sending the MCAP
+    file again. The panel puts all files in one folder, so two different
+    files with the same name (eg two recordings' `metadata.yaml`) can't go
+    in one upload: upload one recording at a time, or use the script for
+    folders
 -   Leaving the dataset blank isn't allowed; a name that doesn't exist yet
     creates a new dataset. You can upload into any dataset, not just the one
     you have open. Each file shows the folder it goes to
 -   When no upload is running, the Dataset field follows the dataset you have
     open
+
+## Sample fields from YAML sidecars
+
+Recordings often carry metadata (robot, campaign, task, review verdicts) in
+YAML files next to each MCAP file. The plugin turns those values into sample
+fields you can filter on in the App. It works for the import operator, the
+panel, and the upload script.
+
+Which YAML files apply to an MCAP file in the same folder:
+
+| YAML file                                  | Applies to                |
+| ------------------------------------------ | ------------------------- |
+| `run1.yaml` or `run1.mcap.yaml` (or `.yml`) | `run1.mcap` only         |
+| any other name, eg `metadata.yaml`, `annotations.yaml` | every MCAP file in the folder |
+
+When several files set the same field, folder-wide files are read first (in
+name order), then the file's own sidecar, then `key=value` fields from the
+panel or `--field`, and the last one wins.
+
+How values become fields:
+
+```yaml
+robot:
+  name: ur5e        # -> robot_name = "ur5e"
+  arm count: 2      # -> robot_arm_count = 2
+campaign: summer-24 # -> campaign = "summer-24"
+reviewed: true      # -> reviewed = True
+recorded: 2026-10-09 # -> recorded (a date)
+labels: [a, b]      # skipped: lists aren't supported yet
+```
+
+-   Text, numbers, true/false, and dates are kept; nested keys are joined
+    with `_`; lists and empty values are skipped
+-   Names are cleaned up to valid field names (spaces and `-` become `_`).
+    Built-in fields such as `filepath`, `tags`, `metadata`, and
+    `uploaded_by` can't be set
+-   If a field already exists with another type, values are converted when
+    possible (eg a number into a text field) and skipped otherwise, with a
+    warning. A new field that gets mixed numbers and text is stored as text
+-   **rosbag2 `metadata.yaml`** is recognized automatically: its
+    `custom_data` entries become fields (with their types inferred, so
+    `"12"` becomes `12`), plus `bag_duration_s`, `bag_start_time`,
+    `bag_message_count`, and `bag_ros_distro`. The topic and file lists are
+    skipped
+-   Fields are set on new samples, and on existing samples when you
+    overwrite. Re-importing without overwrite leaves existing samples alone
+-   Sidecars larger than 1 MB are skipped
 
 ## Deployment setup
 
@@ -437,6 +502,10 @@ python upload.py s3://acme/fiftyone/shared/pick-place --dataset pick-place
 python upload.py ./recordings --dataset kitchen-runs \
     --root gs://acme/fiftyone --pattern "**/chopping*.mcap"
 
+# Set the same fields on every new sample
+python upload.py ./recordings --dataset kitchen-runs \
+    --root gs://acme/fiftyone --field robot=ur5 --field campaign=c7
+
 # Show the plan without changing anything
 python upload.py ./recordings --dataset kitchen-runs --dry-run
 ```
@@ -462,6 +531,12 @@ To replace files that changed (for example after re-processing), add
 and the samples of replaced MCAP files are refreshed the same way as the
 panel's Overwrite option. LeRobot files are re-uploaded, but the dataset is
 not re-imported.
+
+YAML sidecars in the folder are uploaded along with the MCAP files (even
+with `--pattern`) and read during the import; the script prints the fields
+it set and any warnings. `--field key=value` (repeatable) sets a field on
+every new or refreshed sample, and `--no-sidecars` skips the YAML files. See
+[Sample fields from YAML sidecars](#sample-fields-from-yaml-sidecars).
 
 Run `python upload.py --help` for all options.
 

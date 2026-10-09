@@ -3,6 +3,8 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
+  FormControlLabel,
   LinearProgress,
   MenuItem,
   Stack,
@@ -22,6 +24,7 @@ import {
   Item,
   removeItem,
   setField,
+  setOverwrite,
   startBatch,
   Status,
   subscribe,
@@ -62,7 +65,7 @@ export function UploadDialog() {
 function UploadForm({ embedded = false }: { embedded?: boolean }) {
   const currentDataset = useRecoilValue(fos.datasetName) as string | null;
   const state = useSyncExternalStore(subscribe, getState);
-  const { items, running, root, tags, finished, refresh } = state;
+  const { items, running, root, tags, overwrite, finished, refresh } = state;
   const datasetName = state.datasetName ?? currentDataset ?? "";
   const [info, setInfo] = useState<Info | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -202,6 +205,32 @@ function UploadForm({ embedded = false }: { embedded?: boolean }) {
           />
         </Stack>
 
+        <Box sx={{ mt: -1 }}>
+          <FormControlLabel
+            control={
+              <Checkbox
+                id="mmio-overwrite"
+                size="small"
+                checked={overwrite}
+                onChange={(e) => setOverwrite(e.target.checked)}
+                disabled={running}
+              />
+            }
+            label="Overwrite files that already exist"
+          />
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            component="div"
+            sx={{ ml: 4, mt: -0.5 }}
+          >
+            {overwrite
+              ? "Files with the same name replace the ones in the bucket, " +
+                "and their samples are refreshed"
+              : "Files with the same name and size are skipped"}
+          </Typography>
+        </Box>
+
         {willReload && (
           <Alert severity="success">Upload finished, opening the dataset...</Alert>
         )}
@@ -314,7 +343,11 @@ function FileRow({ item }: { item: Item }) {
       ? `${formatBytes(item.sent)} of ${formatBytes(item.file.size)}${eta(item)}`
       : item.status === "done"
       ? `${formatBytes(item.file.size)} · ${
-          item.added ? "imported" : "already in dataset"
+          item.added
+            ? "imported"
+            : item.refreshed
+            ? "replaced"
+            : "already in dataset"
         }`
       : formatBytes(item.file.size);
 

@@ -145,6 +145,13 @@ def main(argv=None):
     else:
         dataset = fo.Dataset(args.dataset, persistent=True)
 
+    # With --overwrite, files that were already in the dataset were uploaded
+    # again in place; their samples are refreshed after the import
+    replaced = []
+    if args.overwrite and not is_remote and result.format == core.MCAP:
+        existing = set(dataset.values("filepath")) if len(dataset) else set()
+        replaced = [f for f in result.files if f in existing]
+
     ids = core.import_scan(
         dataset,
         result,
@@ -152,6 +159,12 @@ def main(argv=None):
         uploaded_by=username,
         progress=True,
     )
+
+    if replaced:
+        refreshed = core.refresh_existing(
+            dataset, replaced, tags=args.tags, uploaded_by=username
+        )
+        print("\nRefreshed %d replaced sample(s)" % len(refreshed))
 
     print("\nAdded %d sample(s) to '%s'" % (len(ids), dataset.name))
     print("Dataset now has %d sample(s)" % len(dataset))
@@ -201,7 +214,11 @@ def _parse_args(argv):
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="re-upload files that already exist in the bucket",
+        help=(
+            "re-upload files that already exist in the bucket, replacing "
+            "them, and refresh the matching MCAP samples. LeRobot files are "
+            "re-uploaded but the dataset is not re-imported"
+        ),
     )
     parser.add_argument(
         "--pattern",

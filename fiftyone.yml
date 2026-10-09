@@ -4,7 +4,7 @@ tags:
   - io
   - multimodal
   - robotics
-version: 0.1.0
+version: 0.1.1
 fiftyone:
   version: ">=2.25.0"
 url: https://github.com/v-nayjack/multimodal-io

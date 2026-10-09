@@ -1,6 +1,6 @@
 {
   "name": "@v-nayjack/multimodal-io",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Browse cloud storage, upload large MCAP files, and import MCAP or LeRobot data into FiftyOne Enterprise",
   "type": "module",
   "main": "src/index.tsx",

@@ -17,7 +17,8 @@ formats:
 
 All paths share the same format detection and folder rules
 ([`core.py`](core.py)), so data lands in the same place however it arrives,
-and a file that was already uploaded or imported is never added twice.
+and a file that was already uploaded or imported is never added twice
+(unless you choose to overwrite it).
 
 Requires FiftyOne Enterprise `>=2.25.0` with multimodal support enabled.
 
@@ -235,7 +236,14 @@ role-based server credentials), the panel fetches fresh links and continues.
     stay imported. A file that is importing can't be cancelled
 -   **Resume**: if the connection drops or the tab reloads, add the same file
     again and click Start: only the missing parts are sent
--   A file that is already fully uploaded is not sent again
+-   A file that is already in the bucket with the same name and size is not
+    sent again
+-   **Overwrite files that already exist**: check this to replace files
+    with the same name, for example after re-processing recordings. The new
+    file replaces the one in the bucket, and its sample is refreshed: its
+    metadata (size, streams) is recomputed from the new file, any tags are
+    added, and `uploaded_by` becomes you. The row then shows "replaced".
+    It's off by default each time the page loads
 -   Leaving the dataset blank isn't allowed; a name that doesn't exist yet
     creates a new dataset. You can upload into any dataset, not just the one
     you have open. Each file shows the folder it goes to
@@ -448,6 +456,12 @@ Dataset now has 1 sample(s)
 
 Re-running the same command resumes an interrupted upload: files already in
 the bucket with the same size are skipped.
+
+To replace files that changed (for example after re-processing), add
+`--overwrite`: every file is uploaded again, replacing the one in the bucket,
+and the samples of replaced MCAP files are refreshed the same way as the
+panel's Overwrite option. LeRobot files are re-uploaded, but the dataset is
+not re-imported.
 
 Run `python upload.py --help` for all options.
 

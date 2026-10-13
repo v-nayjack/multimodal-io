@@ -18,8 +18,16 @@ Examples::
     python upload.py ./recordings --dataset kitchen-runs \\
         --root gs://my-bucket/fiftyone --pattern "**/chopping*.mcap"
 
+    # Add the same fields to every new sample
+    python upload.py ./recordings --dataset kitchen-runs \\
+        --root gs://my-bucket/fiftyone --field robot=ur5 --field campaign=c7
+
     # See what would happen without changing anything
     python upload.py ./recordings --dataset kitchen-runs --dry-run
+
+YAML sidecar files next to each MCAP file (eg ``run1.yaml`` for
+``run1.mcap``, or a ``metadata.yaml`` for the whole folder) are uploaded too,
+and their values become sample fields. See ``core.match_sidecars``.
 
 The root and path template can also be set with the
 ``FIFTYONE_MULTIMODAL_IO_ROOT`` and ``FIFTYONE_MULTIMODAL_IO_PATH_TEMPLATE``
@@ -56,6 +64,10 @@ TEMPLATE_ENV = "FIFTYONE_MULTIMODAL_IO_PATH_TEMPLATE"
 def main(argv=None):
     """Runs the command line interface."""
     args = _parse_args(argv)
+    try:
+        fields = core.parse_fields(args.field)
+    except ValueError as e:
+        _fail(str(e))
 
     source = args.source
     is_remote = not fos.is_local(source)
@@ -160,11 +172,24 @@ def main(argv=None):
         progress=True,
     )
 
+    refreshed = []
     if replaced:
         refreshed = core.refresh_existing(
             dataset, replaced, tags=args.tags, uploaded_by=username
         )
         print("\nRefreshed %d replaced sample(s)" % len(refreshed))
+
+    field_names, warnings = core.apply_metadata(
+        dataset,
+        ids + refreshed,
+        sidecars=None if args.no_sidecars else result.sidecars,
+        fields=fields,
+    )
+    if field_names:
+        print("\nSet field(s): %s" % ", ".join(field_names))
+
+    for warning in warnings:
+        print("Warning: %s" % warning)
 
     print("\nAdded %d sample(s) to '%s'" % (len(ids), dataset.name))
     print("Dataset now has %d sample(s)" % len(dataset))
@@ -226,6 +251,20 @@ def _parse_args(argv):
             "only upload/import MCAP files matching this glob pattern, "
             'relative to the source, eg "**/chopping*.mcap" or "run1/*.mcap"'
         ),
+    )
+    parser.add_argument(
+        "--field",
+        action="append",
+        metavar="KEY=VALUE",
+        help=(
+            "a field to set on each new or refreshed sample, eg robot=ur5. "
+            "Repeat for more fields. Wins over YAML sidecar values"
+        ),
+    )
+    parser.add_argument(
+        "--no-sidecars",
+        action="store_true",
+        help="don't read fields from YAML sidecar files next to MCAP files",
     )
     parser.add_argument(
         "--dry-run",

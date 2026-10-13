@@ -10,11 +10,14 @@ against any bucket the caller has credentials for.
 |
 """
 
+from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import fnmatch
 import os
 import re
+
+import yaml
 
 import fiftyone as fo
 import fiftyone.core.storage as fos
@@ -26,6 +29,10 @@ LEROBOT = "lerobot"
 FORMATS = (MCAP, LEROBOT)
 
 MCAP_EXTS = (".mcap",)
+SIDECAR_EXTS = (".yaml", ".yml")
+MAX_SIDECAR_BYTES = 1000000
+ROSBAG2_KEY = "rosbag2_bagfile_information"
+MAX_UPLOAD_DEPTH = 10
 LEROBOT_INFO_PATH = "meta/info.json"
 
 DEFAULT_PATH_TEMPLATE = "{root}/users/{username}/{dataset}"
@@ -33,7 +40,24 @@ IMPORT_RECORD = "_import.json"
 INFO_KEY = "multimodal_io"
 UPLOADED_BY_FIELD = "uploaded_by"
 
+# Fields that sidecars and key=value inputs may not set
+RESERVED_FIELDS = {
+    "id",
+    "filepath",
+    "tags",
+    "metadata",
+    "media_type",
+    "created_at",
+    "last_modified_at",
+    "frames",
+    "groups",
+    UPLOADED_BY_FIELD,
+}
+
 _UNSAFE_CHARS = re.compile(r"[^a-z0-9._-]+")
+_FIELD_UNSAFE_CHARS = re.compile(r"[^0-9A-Za-z_]+")
+_INT = re.compile(r"^[+-]?(0|[1-9][0-9]*)$")
+_FLOAT = re.compile(r"^[+-]?([0-9]+\.[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?$")
 
 
 @dataclass
@@ -49,6 +73,9 @@ class ScanResult:
         total_bytes: the total size of the importable files, if known
         info: format-specific details (eg LeRobot ``meta/info.json``)
         pattern: the glob pattern MCAP files were filtered by, if any
+        sidecars: a dict mapping each MCAP filepath to the YAML sidecar files
+            that apply to it, lowest precedence first. See
+            :func:`match_sidecars`
     """
 
     path: str
@@ -58,6 +85,7 @@ class ScanResult:
     total_bytes: int = 0
     info: dict = field(default_factory=dict)
     pattern: str = None
+    sidecars: dict = field(default_factory=dict)
 
     def describe(self):
         """Returns a one-line human-readable summary."""
@@ -70,11 +98,15 @@ class ScanResult:
             )
 
         if self.format == MCAP:
-            return "MCAP: %d file%s, %s" % (
+            text = "MCAP: %d file%s, %s" % (
                 self.num_files,
                 "" if self.num_files == 1 else "s",
                 format_bytes(self.total_bytes),
             )
+            if self.sidecars:
+                text += ", %d with YAML sidecars" % len(self.sidecars)
+
+            return text
 
         return "No MCAP files or LeRobot dataset found"
 
@@ -101,12 +133,14 @@ def scan(path, pattern=None):
 
     if _is_mcap(path) and fos.isfile(path):
         size = _file_size(path)
+        sidecars = folder_sidecars(_split(path)[0])
         return ScanResult(
             path=path,
             format=MCAP,
             files=[path],
             num_files=1,
             total_bytes=size,
+            sidecars={path: sidecars[path]} if path in sidecars else {},
         )
 
     info_path = fos.join(path, LEROBOT_INFO_PATH)
@@ -119,12 +153,22 @@ def scan(path, pattern=None):
             info=info,
         )
 
-    files, total = [], 0
+    files, all_mcaps, yamls, total = [], [], [], 0
     for entry in fos.list_files(path, recursive=True, return_metadata=True):
         relpath = entry["filepath"]
-        if not _is_mcap(relpath) or _is_hidden(relpath):
+        if _is_hidden(relpath):
             continue
 
+        # Sidecars are collected whatever the pattern, so a pattern that
+        # selects MCAP files still picks up their metadata
+        if is_sidecar(relpath):
+            yamls.append(fos.join(path, relpath))
+            continue
+
+        if not _is_mcap(relpath):
+            continue
+
+        all_mcaps.append(fos.join(path, relpath))
         if pattern and not matches_pattern(relpath, pattern):
             continue
 
@@ -139,7 +183,374 @@ def scan(path, pattern=None):
         num_files=len(files),
         total_bytes=total,
         pattern=pattern,
+        sidecars=match_sidecars(files, all_mcaps, yamls),
     )
+
+
+def is_sidecar(path):
+    """Whether ``path`` is a YAML file that may hold sample metadata.
+
+    Args:
+        path: a path
+
+    Returns:
+        True/False
+    """
+    return os.path.splitext(path)[1].lower() in SIDECAR_EXTS
+
+
+def match_sidecars(files, mcaps, yamls):
+    """Pairs MCAP files with the YAML sidecar files that describe them.
+
+    A YAML file applies to an MCAP file in the same folder when:
+
+    -   its name matches the MCAP file, eg ``run1.yaml`` or ``run1.mcap.yaml``
+        for ``run1.mcap``. These apply to that file only
+    -   its name matches no MCAP file in the folder, eg ``metadata.yaml`` or
+        ``annotations.yaml``. These apply to every MCAP file in the folder
+
+    Folder-wide files come first, in name order, so a file's own sidecar
+    wins when both set the same field.
+
+    Args:
+        files: the MCAP filepaths to match
+        mcaps: every MCAP filepath in the same folders, used to tell
+            per-file sidecars from folder-wide ones
+        yamls: the YAML filepaths in the same folders
+
+    Returns:
+        a dict mapping each of ``files`` that has sidecars to a list of
+        YAML filepaths
+    """
+    stems = defaultdict(set)
+    for path in list(mcaps) + list(files):
+        folder, name = _split(path)
+        stems[folder].add(os.path.splitext(name)[0])
+
+    by_folder = defaultdict(list)
+    for path in sorted(yamls):
+        folder, _ = _split(path)
+        by_folder[folder].append(path)
+
+    matches = {}
+    for path in files:
+        folder, name = _split(path)
+        stem = os.path.splitext(name)[0]
+        shared, own = [], []
+        for yaml_path in by_folder.get(folder, []):
+            yaml_stem = _sidecar_stem(yaml_path)
+            if yaml_stem == stem:
+                own.append(yaml_path)
+            elif yaml_stem not in stems[folder]:
+                shared.append(yaml_path)
+
+        if shared or own:
+            matches[path] = shared + own
+
+    return matches
+
+
+def folder_sidecars(folder):
+    """Matches the MCAP files directly inside ``folder`` with their YAML
+    sidecars, without searching subfolders.
+
+    Args:
+        folder: a local or remote folder
+
+    Returns:
+        a dict like :attr:`ScanResult.sidecars`
+    """
+    paths = [
+        fos.join(folder, p)
+        for p in fos.list_files(folder)
+        if not _is_hidden(p)
+    ]
+    mcaps = [p for p in paths if _is_mcap(p)]
+    return match_sidecars(mcaps, mcaps, [p for p in paths if is_sidecar(p)])
+
+
+def safe_relpath(relpath):
+    """Validates a relative upload path, eg ``rec1/metadata.yaml``.
+
+    Uploads may keep the folders they were dropped with, but must stay
+    inside the user's dataset folder.
+
+    Args:
+        relpath: a relative path using ``/`` separators
+
+    Returns:
+        the cleaned path
+
+    Raises:
+        ValueError: if the path is absolute, climbs out with ``..``, or has
+            hidden or empty parts
+    """
+    parts = str(relpath or "").replace("\\", "/").strip().split("/")
+    if (
+        not parts
+        or len(parts) > MAX_UPLOAD_DEPTH
+        or any(
+            not p.strip()
+            or p in (".", "..")
+            or p.startswith(".")
+            or any(ord(c) < 32 for c in p)
+            for p in parts
+        )
+    ):
+        raise ValueError("Invalid file path '%s'" % relpath)
+
+    return "/".join(p.strip() for p in parts)
+
+
+def read_sidecar(path):
+    """Reads the sample fields from a YAML sidecar file.
+
+    Nested keys are joined with ``_``, so ``robot: {name: ur5}`` becomes a
+    ``robot_name`` field. Text, numbers, true/false, and dates are kept;
+    lists and empty values are skipped.
+
+    A rosbag2 ``metadata.yaml`` is recognized by its
+    ``rosbag2_bagfile_information`` key. Its ``custom_data`` entries become
+    fields, plus ``bag_duration_s``, ``bag_start_time``,
+    ``bag_message_count``, and ``bag_ros_distro``.
+
+    Args:
+        path: a local or remote YAML filepath
+
+    Returns:
+        a tuple of ``(fields, warnings)``, where ``fields`` is a dict of
+        field names to values and ``warnings`` is a list of strings
+    """
+    name = _split(path)[1]
+    try:
+        text = fos.read_file(path)
+        if len(text) > MAX_SIDECAR_BYTES:
+            return {}, [
+                "Skipped %s: larger than %s"
+                % (name, format_bytes(MAX_SIDECAR_BYTES))
+            ]
+
+        data = yaml.safe_load(text)
+    except Exception as e:
+        return {}, ["Skipped %s: %s" % (name, _first_line(e))]
+
+    if data is None:
+        return {}, []
+
+    if not isinstance(data, dict):
+        return {}, ["Skipped %s: expected key: value pairs" % name]
+
+    warnings = []
+    if isinstance(data.get(ROSBAG2_KEY), dict):
+        fields = _rosbag2_fields(data[ROSBAG2_KEY], name, warnings)
+    else:
+        fields = flatten_fields(data, name, warnings)
+
+    return fields, warnings
+
+
+def flatten_fields(data, source=None, warnings=None, prefix=None):
+    """Converts a nested dict into flat sample fields.
+
+    Args:
+        data: a dict
+        source (None): where the data came from, for warnings
+        warnings (None): an optional list to append warnings to
+        prefix (None): a field name prefix
+
+    Returns:
+        a dict of field names to values
+    """
+    fields = {}
+    for key, value in data.items():
+        name = field_name(key if prefix is None else "%s_%s" % (prefix, key))
+        if not name:
+            _warn(warnings, source, "skipped key '%s': not a valid name" % key)
+            continue
+
+        if isinstance(value, dict):
+            fields.update(flatten_fields(value, source, warnings, name))
+        elif _is_field_value(value):
+            fields[name] = value
+        elif value is not None:
+            _warn(
+                warnings,
+                source,
+                "skipped '%s': lists and other nested values aren't "
+                "supported" % name,
+            )
+
+    return fields
+
+
+def field_name(key):
+    """Converts a metadata key into a valid sample field name.
+
+    Characters other than letters, digits, and ``_`` become ``_``, and names
+    can't start with ``_`` or a digit.
+
+    Args:
+        key: a key
+
+    Returns:
+        a field name, or ``None`` if nothing usable is left
+    """
+    name = _FIELD_UNSAFE_CHARS.sub("_", str(key).strip())
+    name = re.sub("_+", "_", name).strip("_")
+    if not name:
+        return None
+
+    if name[0].isdigit():
+        name = "f_" + name
+
+    return name
+
+
+def parse_value(text):
+    """Infers the type of a value typed as text.
+
+    ``true``/``false`` become booleans and plain numbers become ints or
+    floats. Anything else, including numbers with leading zeros like
+    ``007``, stays text.
+
+    Args:
+        text: a string
+
+    Returns:
+        a bool, int, float, or str
+    """
+    text = str(text).strip()
+    if text.lower() in ("true", "false"):
+        return text.lower() == "true"
+
+    if _INT.match(text):
+        return int(text)
+
+    if _FLOAT.match(text):
+        return float(text)
+
+    return text
+
+
+def parse_fields(entries):
+    """Parses ``key=value`` entries into sample fields.
+
+    Args:
+        entries: a list of ``key=value`` strings, or one string with an
+            entry per line. Blank lines are ignored
+
+    Returns:
+        a dict of field names to values
+
+    Raises:
+        ValueError: if an entry is malformed or uses a reserved name
+    """
+    if isinstance(entries, str):
+        entries = entries.splitlines()
+
+    fields = {}
+    for entry in entries or []:
+        entry = (entry or "").strip()
+        if not entry:
+            continue
+
+        key, sep, value = entry.partition("=")
+        name = field_name(key)
+        if not sep or not key.strip() or not name:
+            raise ValueError(
+                "Invalid field '%s'. Use key=value, eg robot=ur5" % entry
+            )
+
+        if name in RESERVED_FIELDS:
+            raise ValueError(
+                "'%s' is a built-in field and can't be set" % name
+            )
+
+        fields[name] = parse_value(value)
+
+    return fields
+
+
+def apply_metadata(dataset, ids, sidecars=None, fields=None):
+    """Sets fields on samples from their YAML sidecars and ``fields``.
+
+    ``fields`` (eg from key=value inputs) win over sidecar values.
+
+    Args:
+        dataset: a :class:`fiftyone.core.dataset.Dataset`
+        ids: the sample IDs to update
+        sidecars (None): a dict mapping filepaths to YAML sidecar paths, as
+            in :attr:`ScanResult.sidecars`
+        fields (None): a dict of field names to values to set on every
+            sample
+
+    Returns:
+        a tuple of ``(field_names, warnings)``
+    """
+    if not ids or not (sidecars or fields):
+        return [], []
+
+    sample_ids, filepaths = dataset.select(ids).values(["id", "filepath"])
+
+    cache, warnings, values = {}, [], {}
+    for sample_id, filepath in zip(sample_ids, filepaths):
+        sample_values = {}
+        for yaml_path in (sidecars or {}).get(filepath, []):
+            if yaml_path not in cache:
+                cache[yaml_path], new_warnings = read_sidecar(yaml_path)
+                warnings.extend(new_warnings)
+
+            sample_values.update(cache[yaml_path])
+
+        sample_values.update(fields or {})
+        if sample_values:
+            values[sample_id] = sample_values
+
+    names, more_warnings = set_fields(dataset, values)
+    return names, warnings + more_warnings
+
+
+def set_fields(dataset, values):
+    """Writes per-sample field values, reconciling their types.
+
+    Values for an existing field are converted to its type when possible,
+    and skipped otherwise. A new field whose values mix types is stored as
+    floats (ints and floats) or text (anything else).
+
+    Args:
+        dataset: a :class:`fiftyone.core.dataset.Dataset`
+        values: a dict mapping sample IDs to dicts of field values
+
+    Returns:
+        a tuple of ``(field_names, warnings)``
+    """
+    by_field = defaultdict(dict)
+    for sample_id, sample_values in values.items():
+        for name, value in sample_values.items():
+            by_field[name][sample_id] = value
+
+    schema = dataset.get_field_schema()
+    names, warnings = [], []
+    for name in sorted(by_field):
+        if name in RESERVED_FIELDS or name.startswith("_"):
+            warnings.append(
+                "Skipped '%s': it's a built-in field and can't be set" % name
+            )
+            continue
+
+        field_values = _reconcile(
+            name, by_field[name], schema.get(name, None), warnings
+        )
+        if not field_values:
+            continue
+
+        ids = list(field_values)
+        dataset.select(ids, ordered=True).set_values(
+            name, [field_values[i] for i in ids]
+        )
+        names.append(name)
+
+    return names, warnings
 
 
 def matches_pattern(relpath, pattern):
@@ -456,7 +867,7 @@ def upload_dir(
             p
             for p in fos.list_files(local_dir, recursive=True)
             if not _is_hidden(p)
-            and (not pattern or matches_pattern(p, pattern))
+            and (not pattern or matches_pattern(p, pattern) or is_sidecar(p))
         ]
 
     if not relpaths:
@@ -521,6 +932,183 @@ def _record_import(dataset, result):
     info.update(format=result.format, sources=sources)
     dataset.info[INFO_KEY] = info
     dataset.save()
+
+
+def _rosbag2_fields(info, source, warnings):
+    fields = {}
+
+    duration = (info.get("duration") or {}).get("nanoseconds", None)
+    if _is_number(duration):
+        fields["bag_duration_s"] = duration / 1e9
+
+    start = (info.get("starting_time") or {}).get(
+        "nanoseconds_since_epoch", None
+    )
+    if _is_number(start):
+        fields["bag_start_time"] = datetime.fromtimestamp(
+            start / 1e9, tz=timezone.utc
+        )
+
+    if _is_number(info.get("message_count", None)):
+        fields["bag_message_count"] = info["message_count"]
+
+    if info.get("ros_distro", None):
+        fields["bag_ros_distro"] = str(info["ros_distro"])
+
+    # rosbag2 stores custom data as text, so infer the types
+    custom = info.get("custom_data", None) or {}
+    if isinstance(custom, dict):
+        custom = {
+            k: parse_value(v) if isinstance(v, str) else v
+            for k, v in custom.items()
+        }
+        fields.update(flatten_fields(custom, source, warnings))
+
+    return fields
+
+
+def _reconcile(name, values, existing, warnings):
+    """Converts ``values`` (sample ID -> value) to one type, or returns None
+    if the field can't be written."""
+    if existing is not None:
+        convert = _converter(existing)
+        if convert is None:
+            warnings.append(
+                "Skipped '%s': the dataset already has a %s field with that "
+                "name" % (name, type(existing).__name__)
+            )
+            return None
+
+        result, skipped = {}, 0
+        for sample_id, value in values.items():
+            converted = convert(value)
+            if converted is None:
+                skipped += 1
+            else:
+                result[sample_id] = converted
+
+        if skipped:
+            warnings.append(
+                "Skipped %d value(s) of '%s' that don't match its existing "
+                "%s type" % (skipped, name, type(existing).__name__)
+            )
+
+        return result
+
+    kinds = {_kind(v) for v in values.values()}
+    if kinds <= {"int", "float"} and len(kinds) > 1:
+        return {k: float(v) for k, v in values.items()}
+
+    if kinds == {"date", "datetime"}:
+        return {k: _to_datetime(v) for k, v in values.items()}
+
+    if len(kinds) > 1:
+        return {k: _to_str(v) for k, v in values.items()}
+
+    return dict(values)
+
+
+def _converter(field):
+    if isinstance(field, fo.StringField):
+        return _to_str
+
+    if isinstance(field, fo.BooleanField):
+        return lambda v: v if isinstance(v, bool) else None
+
+    if isinstance(field, fo.IntField):
+        return lambda v: (
+            v
+            if _kind(v) == "int"
+            else int(v)
+            if _kind(v) == "float" and v.is_integer()
+            else None
+        )
+
+    if isinstance(field, fo.FloatField):
+        return lambda v: float(v) if _kind(v) in ("int", "float") else None
+
+    if isinstance(field, fo.DateTimeField):
+        return lambda v: (
+            _to_datetime(v) if _kind(v) in ("date", "datetime") else None
+        )
+
+    if isinstance(field, fo.DateField):
+        return lambda v: (
+            v.date()
+            if _kind(v) == "datetime"
+            else v
+            if _kind(v) == "date"
+            else None
+        )
+
+    return None
+
+
+def _kind(value):
+    if isinstance(value, bool):
+        return "bool"
+
+    if isinstance(value, int):
+        return "int"
+
+    if isinstance(value, float):
+        return "float"
+
+    if isinstance(value, datetime):
+        return "datetime"
+
+    if isinstance(value, date):
+        return "date"
+
+    return "str"
+
+
+def _to_str(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+
+    return str(value)
+
+
+def _to_datetime(value):
+    if isinstance(value, datetime):
+        return value
+
+    return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+
+
+def _is_field_value(value):
+    return isinstance(value, (bool, int, float, str, date, datetime))
+
+
+def _is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _sidecar_stem(path):
+    stem = os.path.splitext(_split(path)[1])[0]
+    if _is_mcap(stem):
+        stem = os.path.splitext(stem)[0]
+
+    return stem
+
+
+def _split(path):
+    folder, _, name = path.replace(os.sep, "/").rpartition("/")
+    return folder, name
+
+
+def _warn(warnings, source, msg):
+    if warnings is not None:
+        warnings.append("%s: %s" % (source, msg) if source else msg)
+
+
+def _first_line(e):
+    text = str(e).strip()
+    return text.splitlines()[0] if text else type(e).__name__
 
 
 def _is_mcap(path):

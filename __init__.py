@@ -149,15 +149,21 @@ class ImportMultimodal(foo.Operator):
             compute_metadata=True,
             progress=_progress(ctx),
         )
+        fields, _ = core.apply_metadata(dataset, ids, sidecars=result.sidecars)
 
         _finish(ctx, dataset, result)
 
-        return {"dataset": dataset.name, "num_added": len(ids)}
+        return {
+            "dataset": dataset.name,
+            "num_added": len(ids),
+            "fields": ", ".join(fields) or "none",
+        }
 
     def resolve_output(self, ctx):
         outputs = types.Object()
         outputs.str("dataset", label="Dataset")
         outputs.int("num_added", label="Samples added")
+        outputs.str("fields", label="Fields set from YAML sidecars")
         return types.Property(outputs)
 
 
@@ -295,11 +301,16 @@ class StartLargeUpload(foo.Operator):
     def execute(self, ctx):
         path, size = _upload_target(ctx)
 
+        # Fail before any bytes are sent if the key=value fields are invalid
+        core.parse_fields(ctx.params.get("fields", None))
+
         # A file that is already fully uploaded only needs importing, unless
-        # the user asked to replace it
+        # the user asked to replace it. Sidecars are small and always
+        # replaced, so the latest metadata is what gets read
         overwrite = bool(ctx.params.get("overwrite", False))
         if (
             not overwrite
+            and not core.is_sidecar(path)
             and fos.isfile(path)
             and uploads.object_size(path) == size
         ):
@@ -354,6 +365,12 @@ class CompleteLargeUpload(foo.Operator):
             )
 
         name = ctx.params["dataset_name"].strip()
+        fields = core.parse_fields(ctx.params.get("fields", None))
+        overwrite = bool(ctx.params.get("overwrite", False))
+
+        if core.is_sidecar(path):
+            return _complete_sidecar(ctx, name, path, fields, overwrite)
+
         if fo.dataset_exists(name):
             dataset = fo.load_dataset(name)
         else:
@@ -370,9 +387,10 @@ class CompleteLargeUpload(foo.Operator):
 
         tags = ctx.params.get("tags", None) or None
         username = _get_username(ctx)
+        result = core.scan(path)
         ids = core.import_scan(
             dataset,
-            core.scan(path),
+            result,
             tags=tags,
             uploaded_by=username,
             compute_metadata=True,
@@ -381,17 +399,55 @@ class CompleteLargeUpload(foo.Operator):
         # A replaced file keeps its filepath, so its sample was skipped
         # above; refresh it to match the new file
         refreshed = []
-        if ctx.params.get("overwrite", False) and not ids:
+        if overwrite and not ids:
             refreshed = core.refresh_existing(
                 dataset, [path], tags=tags, uploaded_by=username
             )
+
+        field_names, warnings = core.apply_metadata(
+            dataset, ids + refreshed, sidecars=result.sidecars, fields=fields
+        )
 
         return {
             "dataset": dataset.name,
             "num_added": len(ids),
             "num_refreshed": len(refreshed),
+            "fields": field_names,
+            "warnings": warnings,
             "path": path,
         }
+
+
+def _complete_sidecar(ctx, name, path, fields, overwrite):
+    """A YAML sidecar was uploaded. It is read when its MCAP files are
+    imported; with overwrite on, samples already imported from the same
+    folder are refreshed too."""
+    result = {
+        "dataset": name,
+        "num_added": 0,
+        "num_refreshed": 0,
+        "sidecar": True,
+        "fields": [],
+        "warnings": [],
+        "path": path,
+    }
+    if not overwrite or not fo.dataset_exists(name):
+        return result
+
+    # Only MCAP files in the sidecar's own folder can use it
+    sidecars = core.folder_sidecars(path.rsplit("/", 1)[0])
+    files = [f for f, paths in sidecars.items() if path in paths]
+    dataset = fo.load_dataset(name)
+    ids = (
+        dataset.match(core.F("filepath").is_in(files)).values("id")
+        if files and len(dataset)
+        else []
+    )
+    names, warnings = core.apply_metadata(
+        dataset, ids, sidecars=sidecars, fields=fields
+    )
+    result.update(num_refreshed=len(ids), fields=names, warnings=warnings)
+    return result
 
 
 class AbortLargeUpload(foo.Operator):
@@ -437,10 +493,12 @@ def _upload_dir(ctx, dataset_name):
 
 def _upload_target(ctx):
     """Recomputes the upload path server-side so a browser can only ever
-    write into its own user's folder under the configured root."""
-    filename = os.path.basename(ctx.params["filename"])
-    if not filename.lower().endswith(core.MCAP_EXTS):
-        raise ValueError("Only .mcap files can be uploaded")
+    write into its own user's folder under the configured root. Files may
+    keep the subfolders they were dropped with, eg ``rec1/metadata.yaml``"""
+    relpath = core.safe_relpath(ctx.params["filename"])
+    filename = relpath.rsplit("/", 1)[-1]
+    if not filename.lower().endswith(core.MCAP_EXTS + core.SIDECAR_EXTS):
+        raise ValueError("Only .mcap files and .yaml sidecars can be uploaded")
 
     name = (ctx.params.get("dataset_name", None) or "").strip()
     if not name:
@@ -453,7 +511,13 @@ def _upload_target(ctx):
     if size <= 0:
         raise ValueError("'%s' is empty" % filename)
 
-    return fos.join(_upload_dir(ctx, name), filename), size
+    if core.is_sidecar(filename) and size > core.MAX_SIDECAR_BYTES:
+        raise ValueError(
+            "'%s' is larger than %s; sidecars hold metadata only"
+            % (filename, core.format_bytes(core.MAX_SIDECAR_BYTES))
+        )
+
+    return fos.join(_upload_dir(ctx, name), *relpath.split("/")), size
 
 
 def _dataset_inputs(ctx, inputs, fmt, default_name):

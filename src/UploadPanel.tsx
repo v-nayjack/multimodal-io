@@ -18,10 +18,12 @@ import {
   addFiles,
   cancelAll,
   cancelItem,
+  droppedFiles,
   followDataset,
   getState,
   isActive,
   Item,
+  pickedFiles,
   removeItem,
   setField,
   setOverwrite,
@@ -65,11 +67,13 @@ export function UploadDialog() {
 function UploadForm({ embedded = false }: { embedded?: boolean }) {
   const currentDataset = useRecoilValue(fos.datasetName) as string | null;
   const state = useSyncExternalStore(subscribe, getState);
-  const { items, running, root, tags, overwrite, finished, refresh } = state;
+  const { items, running, root, tags, fields, overwrite, finished, refresh } =
+    state;
   const datasetName = state.datasetName ?? currentDataset ?? "";
   const [info, setInfo] = useState<Info | null>(null);
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const folderRef = useRef<HTMLInputElement>(null);
   const latestRequest = useRef(0);
 
   // Show where files will go and whether the dataset can take them
@@ -205,6 +209,22 @@ function UploadForm({ embedded = false }: { embedded?: boolean }) {
           />
         </Stack>
 
+        <TextField
+          id="mmio-fields"
+          label="Fields (optional, one key=value per line)"
+          size="small"
+          multiline
+          minRows={2}
+          placeholder={"robot=ur5\ncampaign=summer-run"}
+          value={fields}
+          onChange={(e) => setField("fields", e.target.value)}
+          disabled={running}
+          helperText={
+            "Set on every file in this upload. Values from .yaml sidecar " +
+            "files are read too; these win if both set the same field"
+          }
+        />
+
         <Box sx={{ mt: -1 }}>
           <FormControlLabel
             control={
@@ -226,8 +246,10 @@ function UploadForm({ embedded = false }: { embedded?: boolean }) {
           >
             {overwrite
               ? "Files with the same name replace the ones in the bucket, " +
-                "and their samples are refreshed"
-              : "Files with the same name and size are skipped"}
+                "and their samples and fields are refreshed"
+              : "MCAP files with the same name and size are skipped. " +
+                ".yaml sidecars are always replaced, but only new samples " +
+                "read them"}
           </Typography>
         </Box>
 
@@ -250,7 +272,7 @@ function UploadForm({ embedded = false }: { embedded?: boolean }) {
           onDrop={(e) => {
             e.preventDefault();
             setDragging(false);
-            addFiles(e.dataTransfer.files);
+            droppedFiles(e.dataTransfer).then(addFiles);
           }}
           sx={{
             border: "2px dashed",
@@ -261,30 +283,54 @@ function UploadForm({ embedded = false }: { embedded?: boolean }) {
             bgcolor: dragging ? "action.hover" : "transparent",
           }}
         >
-          <Typography>Drag &amp; drop .mcap files here</Typography>
+          <Typography>
+            Drag &amp; drop recording folders or .mcap files here
+          </Typography>
           <Typography
             variant="caption"
             color="text.secondary"
             component="div"
             sx={{ mb: 1 }}
           >
-            No size limit · files added during an upload join the queue
+            No size limit · folders keep their layout, so each recording's
+            .yaml sidecars (eg metadata.yaml) stay with its MCAP files
           </Typography>
-          <Button
-            variant="outlined"
-            size="small"
-            onClick={() => inputRef.current?.click()}
-          >
-            Choose files
-          </Button>
+          <Stack direction="row" spacing={1} justifyContent="center">
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={() => inputRef.current?.click()}
+            >
+              Choose files
+            </Button>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={() => folderRef.current?.click()}
+            >
+              Choose folder
+            </Button>
+          </Stack>
           <input
             ref={inputRef}
             type="file"
-            accept=".mcap"
+            accept=".mcap,.yaml,.yml"
             multiple
             hidden
             onChange={(e) => {
-              addFiles(e.target.files);
+              addFiles(pickedFiles(e.target.files));
+              e.target.value = "";
+            }}
+          />
+          <input
+            ref={folderRef}
+            type="file"
+            multiple
+            hidden
+            // Not in React's types, but supported by all current browsers
+            {...{ webkitdirectory: "" }}
+            onChange={(e) => {
+              addFiles(pickedFiles(e.target.files));
               e.target.value = "";
             }}
           />
@@ -338,16 +384,22 @@ function FileRow({ item }: { item: Item }) {
   const pct = item.file.size ? (100 * item.sent) / item.file.size : 0;
   const canCancel = item.status === "starting" || item.status === "uploading";
   const canRemove = !isActive(item.status) && item.status !== "done";
+  const numFields = item.fields?.length ?? 0;
+  const doneLabel = item.sidecar
+    ? item.refreshed
+      ? `sidecar, updated ${item.refreshed} sample(s)`
+      : "sidecar uploaded"
+    : item.added
+    ? "imported"
+    : item.refreshed
+    ? "replaced"
+    : "already in dataset";
   const detail =
     item.status === "uploading"
       ? `${formatBytes(item.sent)} of ${formatBytes(item.file.size)}${eta(item)}`
       : item.status === "done"
-      ? `${formatBytes(item.file.size)} · ${
-          item.added
-            ? "imported"
-            : item.refreshed
-            ? "replaced"
-            : "already in dataset"
+      ? `${formatBytes(item.file.size)} · ${doneLabel}${
+          numFields ? ` · ${numFields} field${numFields === 1 ? "" : "s"}` : ""
         }`
       : formatBytes(item.file.size);
 
@@ -361,7 +413,7 @@ function FileRow({ item }: { item: Item }) {
       >
         <Box sx={{ minWidth: 0 }}>
           <Typography variant="body2" sx={{ wordBreak: "break-all" }}>
-            {item.file.name}
+            {item.relpath}
           </Typography>
           {item.dest && (
             <Typography
@@ -413,6 +465,26 @@ function FileRow({ item }: { item: Item }) {
           {item.error}
         </Typography>
       )}
+      {numFields > 0 && (
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          component="div"
+          sx={{ wordBreak: "break-word" }}
+        >
+          Fields: {item.fields!.join(", ")}
+        </Typography>
+      )}
+      {item.warnings?.map((w) => (
+        <Typography
+          key={w}
+          variant="caption"
+          color="warning.main"
+          component="div"
+        >
+          {w}
+        </Typography>
+      ))}
     </Box>
   );
 }

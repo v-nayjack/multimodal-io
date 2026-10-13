@@ -56,6 +56,8 @@ type Plan = {
 type Saved = Pick<Plan, "mode" | "upload_id" | "session_url" | "chunk_size">;
 
 export type UploadOptions = {
+  /** Where the file goes inside the dataset folder, eg "rec1/run.mcap" */
+  relpath: string;
   root: string;
   datasetName: string;
   tags?: string[];
@@ -98,7 +100,7 @@ export async function uploadFile(
   opts: UploadOptions
 ): Promise<UploadResult> {
   const base = {
-    filename: file.name,
+    filename: opts.relpath,
     size: file.size,
     dataset_name: opts.datasetName,
     root: opts.root,
@@ -106,7 +108,7 @@ export async function uploadFile(
     overwrite: !!opts.overwrite,
     fields: opts.fields ?? [],
   };
-  const key = storeKey(file, opts.root, opts.datasetName);
+  const key = storeKey(file, opts.relpath, opts.root, opts.datasetName);
 
   opts.onStage("starting");
   const saved = load(key);
@@ -208,15 +210,16 @@ export async function uploadFile(
 /** Cancels an in-progress upload and discards what was sent so far. */
 export async function cancelUpload(
   file: File,
+  relpath: string,
   root: string,
   datasetName: string
 ): Promise<void> {
-  const key = storeKey(file, root, datasetName);
+  const key = storeKey(file, relpath, root, datasetName);
   const saved = load(key);
   remove(key);
   if (saved?.mode === "s3_multipart" && saved.upload_id) {
     await runOperator("abort_large_upload", {
-      filename: file.name,
+      filename: relpath,
       size: file.size,
       dataset_name: datasetName,
       root,
@@ -551,8 +554,13 @@ export function isAbort(e: unknown): boolean {
   return e instanceof DOMException && e.name === "AbortError";
 }
 
-function storeKey(file: File, root: string, datasetName: string) {
-  return `${STORE_PREFIX}${root}:${datasetName}:${file.name}:${file.size}:${file.lastModified}`;
+function storeKey(
+  file: File,
+  relpath: string,
+  root: string,
+  datasetName: string
+) {
+  return `${STORE_PREFIX}${root}:${datasetName}:${relpath}:${file.size}:${file.lastModified}`;
 }
 
 function load(key: string): Saved | null {

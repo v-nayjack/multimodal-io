@@ -19,6 +19,8 @@ export type Status = "queued" | UploadStage | "done" | "error" | "cancelled";
 export type Item = {
   id: string;
   file: File;
+  /** Path inside the dataset folder, keeping any dropped subfolders */
+  relpath: string;
   status: Status;
   sent: number;
   startedAt?: number;
@@ -103,20 +105,81 @@ export function isSidecar(name: string): boolean {
   return /\.ya?ml$/i.test(name);
 }
 
+export type Picked = { file: File; relpath: string };
+
 /**
- * Adds .mcap files and .yaml sidecars to the queue. A file that is already
- * listed is ignored, unless it finished uploading; then it is queued again
- * so it can be re-uploaded (for example with Overwrite turned on).
+ * Converts files from a file picker to queue entries. Files picked from a
+ * folder keep their path inside it, eg "rec1/metadata.yaml".
  */
-export function addFiles(files: FileList | File[] | null) {
-  if (!files) return;
-  const picked = Array.from(files).filter(
-    (f) => f.name.toLowerCase().endsWith(".mcap") || isSidecar(f.name)
+export function pickedFiles(files: FileList | null): Picked[] {
+  return Array.from(files ?? []).map((file) => ({
+    file,
+    relpath: file.webkitRelativePath || file.name,
+  }));
+}
+
+/**
+ * Collects the files from a drop, walking into dropped folders so each file
+ * keeps its path, eg "rec1/metadata.yaml". Call it straight from the drop
+ * handler: the browser only lets folders be read during the event.
+ */
+export async function droppedFiles(dt: DataTransfer): Promise<Picked[]> {
+  const entries = Array.from(dt.items ?? [])
+    .map((item) => item.webkitGetAsEntry?.())
+    .filter((e): e is FileSystemEntry => !!e);
+  if (!entries.length) {
+    return pickedFiles(dt.files);
+  }
+
+  const out: Picked[] = [];
+  for (const entry of entries) {
+    await walk(entry, "", out);
+  }
+  return out.sort((a, b) => a.relpath.localeCompare(b.relpath));
+}
+
+async function walk(entry: FileSystemEntry, prefix: string, out: Picked[]) {
+  const relpath = prefix ? `${prefix}/${entry.name}` : entry.name;
+  if (entry.name.startsWith(".")) return;
+
+  if (entry.isFile) {
+    const file = await new Promise<File>((resolve, reject) =>
+      (entry as FileSystemFileEntry).file(resolve, reject)
+    );
+    out.push({ file, relpath });
+  } else if (entry.isDirectory) {
+    const reader = (entry as FileSystemDirectoryEntry).createReader();
+    // Folders are read in batches until an empty one comes back
+    for (;;) {
+      const batch = await new Promise<FileSystemEntry[]>((resolve, reject) =>
+        reader.readEntries(resolve, reject)
+      );
+      if (!batch.length) break;
+      for (const child of batch) {
+        await walk(child, relpath, out);
+      }
+    }
+  }
+}
+
+/**
+ * Adds .mcap files and .yaml sidecars to the queue; other files and hidden
+ * folders are ignored. A file that is already listed is ignored, unless it
+ * finished uploading; then it is queued again so it can be re-uploaded (for
+ * example with Overwrite turned on).
+ */
+export function addFiles(files: Picked[]) {
+  const picked = files.filter(
+    ({ file, relpath }) =>
+      (file.name.toLowerCase().endsWith(".mcap") || isSidecar(file.name)) &&
+      !relpath.split("/").some((p) => p.startsWith("."))
   );
+  if (!picked.length) return;
   setState((s) => {
-    const fresh = picked.map((file) => ({
-      id: `${file.name}:${file.size}:${file.lastModified}`,
+    const fresh = picked.map(({ file, relpath }) => ({
+      id: `${relpath}:${file.size}:${file.lastModified}`,
       file,
+      relpath,
       status: "queued" as Status,
       sent: 0,
     }));
@@ -126,24 +189,23 @@ export function addFiles(files: FileList | File[] | null) {
       (it) => !(it.status === "done" && pickedIds.has(it.id))
     );
     const known = new Set(kept.map((it) => it.id));
-    // Uploads go into one folder, so two different files with the same name
-    // would replace each other
-    const names = new Set(
-      kept.filter((it) => it.status !== "done").map((it) => it.file.name)
+    // Two different files with the same path would replace each other
+    const paths = new Set(
+      kept.filter((it) => it.status !== "done").map((it) => it.relpath)
     );
     const next = fresh
       .filter((it) => !known.has(it.id))
       .map((it) => {
-        if (names.has(it.file.name)) {
+        if (paths.has(it.relpath)) {
           return {
             ...it,
             status: "error" as Status,
             error:
-              "Another file with this name is already in the list. Upload " +
-              "one recording at a time, or use the CLI for folders",
+              "Another file with this name is already in the list. Drop " +
+              "each recording's folder instead, so files keep their folders",
           };
         }
-        names.add(it.file.name);
+        paths.add(it.relpath);
         return it;
       });
     return { items: [...kept, ...next], finished: null };
@@ -248,10 +310,11 @@ export async function startBatch(
       status: "starting",
       sent: 0,
       startedAt: Date.now(),
-      dest: targetDir ?? undefined,
+      dest: targetDir ? joinDir(targetDir, current.relpath) : undefined,
     });
     try {
       const result = await uploadFile(current.file, {
+        relpath: current.relpath,
         root,
         datasetName,
         tags: tags.length ? tags : undefined,
@@ -283,7 +346,7 @@ export async function startBatch(
     } catch (e: any) {
       if (isAbort(e)) {
         updateItem(current.id, { status: "cancelled" });
-        cancelUpload(current.file, root, datasetName);
+        cancelUpload(current.file, current.relpath, root, datasetName);
       } else {
         updateItem(current.id, {
           status: "error",
@@ -312,11 +375,17 @@ function nextQueued(): Item | undefined {
   return queued.find((it) => isSidecar(it.file.name)) ?? queued[0];
 }
 
+/** The folder a file goes to: the target folder plus its subfolders. */
+function joinDir(targetDir: string, relpath: string): string {
+  const parts = relpath.split("/").slice(0, -1);
+  return [targetDir, ...parts].join("/");
+}
+
 function isDuplicate(item: Item): boolean {
   return state.items.some(
     (it) =>
       it !== item &&
-      it.file.name === item.file.name &&
+      it.relpath === item.relpath &&
       it.status !== "done" &&
       state.items.indexOf(it) < state.items.indexOf(item)
   );

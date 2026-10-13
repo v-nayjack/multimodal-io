@@ -411,3 +411,42 @@ def test_upload_dir_pattern_keeps_sidecars(tmp_path):
     num_up, _, _ = core.upload_dir(str(src), dst, pattern="keep*.mcap")
     assert num_up == 2
     assert os.path.isfile(os.path.join(dst, "metadata.yaml"))
+
+
+def test_safe_relpath():
+    assert core.safe_relpath("run.mcap") == "run.mcap"
+    assert core.safe_relpath("rec1/metadata.yaml") == "rec1/metadata.yaml"
+    assert core.safe_relpath("a\\b.mcap") == "a/b.mcap"
+
+    for bad in (
+        "",
+        "/abs.mcap",
+        "../up.mcap",
+        "a/../../b.mcap",
+        "a//b.mcap",
+        ".hidden/a.mcap",
+        "a/./b.mcap",
+        "x/" * 10 + "deep.mcap",
+    ):
+        with pytest.raises(ValueError):
+            core.safe_relpath(bad)
+
+
+def test_folder_sidecars_stay_in_their_folder(tmp_path):
+    root = str(tmp_path)
+    for rec in ("rec1", "rec2"):
+        _touch(os.path.join(root, rec, "%s_0.mcap" % rec))
+        _write(os.path.join(root, rec, "metadata.yaml"), "robot: %s\n" % rec)
+
+    rec1 = os.path.join(root, "rec1")
+    sidecars = core.folder_sidecars(rec1)
+    assert sidecars == {
+        os.path.join(rec1, "rec1_0.mcap"): [
+            os.path.join(rec1, "metadata.yaml")
+        ]
+    }
+
+    # Each recording reads only its own metadata.yaml
+    result = core.scan(root)
+    for path, yamls in result.sidecars.items():
+        assert [os.path.dirname(y) for y in yamls] == [os.path.dirname(path)]

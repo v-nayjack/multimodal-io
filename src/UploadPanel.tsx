@@ -18,10 +18,12 @@ import {
   addFiles,
   cancelAll,
   cancelItem,
+  droppedFiles,
   followDataset,
   getState,
   isActive,
   Item,
+  pickedFiles,
   removeItem,
   setField,
   setOverwrite,
@@ -71,6 +73,7 @@ function UploadForm({ embedded = false }: { embedded?: boolean }) {
   const [info, setInfo] = useState<Info | null>(null);
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const folderRef = useRef<HTMLInputElement>(null);
   const latestRequest = useRef(0);
 
   // Show where files will go and whether the dataset can take them
@@ -269,7 +272,7 @@ function UploadForm({ embedded = false }: { embedded?: boolean }) {
           onDrop={(e) => {
             e.preventDefault();
             setDragging(false);
-            addFiles(e.dataTransfer.files);
+            droppedFiles(e.dataTransfer).then(addFiles);
           }}
           sx={{
             border: "2px dashed",
@@ -281,7 +284,7 @@ function UploadForm({ embedded = false }: { embedded?: boolean }) {
           }}
         >
           <Typography>
-            Drag &amp; drop .mcap files and their .yaml sidecars here
+            Drag &amp; drop recording folders or .mcap files here
           </Typography>
           <Typography
             variant="caption"
@@ -289,16 +292,25 @@ function UploadForm({ embedded = false }: { embedded?: boolean }) {
             component="div"
             sx={{ mb: 1 }}
           >
-            No size limit · a sidecar named like its MCAP (run1.yaml) applies
-            to that file; any other .yaml (metadata.yaml) applies to all
+            No size limit · folders keep their layout, so each recording's
+            .yaml sidecars (eg metadata.yaml) stay with its MCAP files
           </Typography>
-          <Button
-            variant="outlined"
-            size="small"
-            onClick={() => inputRef.current?.click()}
-          >
-            Choose files
-          </Button>
+          <Stack direction="row" spacing={1} justifyContent="center">
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={() => inputRef.current?.click()}
+            >
+              Choose files
+            </Button>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={() => folderRef.current?.click()}
+            >
+              Choose folder
+            </Button>
+          </Stack>
           <input
             ref={inputRef}
             type="file"
@@ -306,7 +318,19 @@ function UploadForm({ embedded = false }: { embedded?: boolean }) {
             multiple
             hidden
             onChange={(e) => {
-              addFiles(e.target.files);
+              addFiles(pickedFiles(e.target.files));
+              e.target.value = "";
+            }}
+          />
+          <input
+            ref={folderRef}
+            type="file"
+            multiple
+            hidden
+            // Not in React's types, but supported by all current browsers
+            {...{ webkitdirectory: "" }}
+            onChange={(e) => {
+              addFiles(pickedFiles(e.target.files));
               e.target.value = "";
             }}
           />
@@ -389,7 +413,7 @@ function FileRow({ item }: { item: Item }) {
       >
         <Box sx={{ minWidth: 0 }}>
           <Typography variant="body2" sx={{ wordBreak: "break-all" }}>
-            {item.file.name}
+            {item.relpath}
           </Typography>
           {item.dest && (
             <Typography

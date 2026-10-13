@@ -32,6 +32,7 @@ MCAP_EXTS = (".mcap",)
 SIDECAR_EXTS = (".yaml", ".yml")
 MAX_SIDECAR_BYTES = 1000000
 ROSBAG2_KEY = "rosbag2_bagfile_information"
+MAX_UPLOAD_DEPTH = 10
 LEROBOT_INFO_PATH = "meta/info.json"
 
 DEFAULT_PATH_TEMPLATE = "{root}/users/{username}/{dataset}"
@@ -132,23 +133,14 @@ def scan(path, pattern=None):
 
     if _is_mcap(path) and fos.isfile(path):
         size = _file_size(path)
-        folder = path.rsplit("/", 1)[0]
-        neighbors = [
-            fos.join(folder, p)
-            for p in fos.list_files(folder)
-            if not _is_hidden(p)
-        ]
+        sidecars = folder_sidecars(_split(path)[0])
         return ScanResult(
             path=path,
             format=MCAP,
             files=[path],
             num_files=1,
             total_bytes=size,
-            sidecars=match_sidecars(
-                [path],
-                [p for p in neighbors if _is_mcap(p)],
-                [p for p in neighbors if is_sidecar(p)],
-            ),
+            sidecars={path: sidecars[path]} if path in sidecars else {},
         )
 
     info_path = fos.join(path, LEROBOT_INFO_PATH)
@@ -256,6 +248,58 @@ def match_sidecars(files, mcaps, yamls):
             matches[path] = shared + own
 
     return matches
+
+
+def folder_sidecars(folder):
+    """Matches the MCAP files directly inside ``folder`` with their YAML
+    sidecars, without searching subfolders.
+
+    Args:
+        folder: a local or remote folder
+
+    Returns:
+        a dict like :attr:`ScanResult.sidecars`
+    """
+    paths = [
+        fos.join(folder, p)
+        for p in fos.list_files(folder)
+        if not _is_hidden(p)
+    ]
+    mcaps = [p for p in paths if _is_mcap(p)]
+    return match_sidecars(mcaps, mcaps, [p for p in paths if is_sidecar(p)])
+
+
+def safe_relpath(relpath):
+    """Validates a relative upload path, eg ``rec1/metadata.yaml``.
+
+    Uploads may keep the folders they were dropped with, but must stay
+    inside the user's dataset folder.
+
+    Args:
+        relpath: a relative path using ``/`` separators
+
+    Returns:
+        the cleaned path
+
+    Raises:
+        ValueError: if the path is absolute, climbs out with ``..``, or has
+            hidden or empty parts
+    """
+    parts = str(relpath or "").replace("\\", "/").strip().split("/")
+    if (
+        not parts
+        or len(parts) > MAX_UPLOAD_DEPTH
+        or any(
+            not p.strip()
+            or p in (".", "..")
+            or p.startswith(".")
+            or any(ord(c) < 32 for c in p)
+            for p in parts
+        )
+    ):
+        raise ValueError("Invalid file path '%s'" % relpath)
+
+    return "/".join(p.strip() for p in parts)
 
 
 def read_sidecar(path):

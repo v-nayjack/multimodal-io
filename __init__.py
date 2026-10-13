@@ -434,9 +434,9 @@ def _complete_sidecar(ctx, name, path, fields, overwrite):
     if not overwrite or not fo.dataset_exists(name):
         return result
 
-    folder = path.rsplit("/", 1)[0]
-    scan = core.scan(folder)
-    files = [f for f, paths in scan.sidecars.items() if path in paths]
+    # Only MCAP files in the sidecar's own folder can use it
+    sidecars = core.folder_sidecars(path.rsplit("/", 1)[0])
+    files = [f for f, paths in sidecars.items() if path in paths]
     dataset = fo.load_dataset(name)
     ids = (
         dataset.match(core.F("filepath").is_in(files)).values("id")
@@ -444,7 +444,7 @@ def _complete_sidecar(ctx, name, path, fields, overwrite):
         else []
     )
     names, warnings = core.apply_metadata(
-        dataset, ids, sidecars=scan.sidecars, fields=fields
+        dataset, ids, sidecars=sidecars, fields=fields
     )
     result.update(num_refreshed=len(ids), fields=names, warnings=warnings)
     return result
@@ -493,8 +493,10 @@ def _upload_dir(ctx, dataset_name):
 
 def _upload_target(ctx):
     """Recomputes the upload path server-side so a browser can only ever
-    write into its own user's folder under the configured root."""
-    filename = os.path.basename(ctx.params["filename"])
+    write into its own user's folder under the configured root. Files may
+    keep the subfolders they were dropped with, eg ``rec1/metadata.yaml``"""
+    relpath = core.safe_relpath(ctx.params["filename"])
+    filename = relpath.rsplit("/", 1)[-1]
     if not filename.lower().endswith(core.MCAP_EXTS + core.SIDECAR_EXTS):
         raise ValueError("Only .mcap files and .yaml sidecars can be uploaded")
 
@@ -515,7 +517,7 @@ def _upload_target(ctx):
             % (filename, core.format_bytes(core.MAX_SIDECAR_BYTES))
         )
 
-    return fos.join(_upload_dir(ctx, name), filename), size
+    return fos.join(_upload_dir(ctx, name), *relpath.split("/")), size
 
 
 def _dataset_inputs(ctx, inputs, fmt, default_name):

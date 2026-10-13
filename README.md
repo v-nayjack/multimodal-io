@@ -223,8 +223,12 @@ Then:
     `<location>/users/<you>/<dataset>/`
 3.  **Fields** (optional): `key=value` lines, eg `robot=ur5`, set on every
     file in this upload
-4.  Drag in `.mcap` files, plus any `.yaml` sidecars, or click **Choose
-    files**. There is no size limit
+4.  Drag in recording folders or `.mcap` files, or click **Choose files** /
+    **Choose folder**. Folders keep their layout, so `rec1/metadata.yaml`
+    lands next to `rec1/rec1_0.mcap` in
+    `<location>/users/<you>/<dataset>/rec1/`. Only `.mcap` and `.yaml`
+    files are picked up; hidden files and folders are skipped. There is no
+    size limit
 5.  Click **Start upload**. Files upload one at a time; each shows its
     progress, speed, and time left, then is imported as soon as it finishes
 
@@ -257,11 +261,11 @@ role-based server credentials), the panel fetches fresh links and continues.
     MCAP file is imported. Each imported row lists the fields it got, and
     any value that couldn't be read shows as a warning. Sidecars are always
     replaced (they're small); with Overwrite on, uploading just a changed
-    sidecar also updates the samples it applies to, without sending the MCAP
-    file again. The panel puts all files in one folder, so two different
-    files with the same name (eg two recordings' `metadata.yaml`) can't go
-    in one upload: upload one recording at a time, or use the script for
-    folders
+    sidecar also updates the samples in its folder, without sending the MCAP
+    file again. **Drop each recording as a folder** when recordings share
+    file names like `metadata.yaml`: loose files all go into the dataset
+    folder, where a `metadata.yaml` would apply to every MCAP file there.
+    Two different files with the same path can't go in one upload
 -   Leaving the dataset blank isn't allowed; a name that doesn't exist yet
     creates a new dataset. You can upload into any dataset, not just the one
     you have open. Each file shows the folder it goes to
